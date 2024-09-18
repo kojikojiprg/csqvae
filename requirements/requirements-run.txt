@@ -1,0 +1,6 @@
+wheel
+numpy
+scipy
+matplotlib
+opencv-python
+PyYAML

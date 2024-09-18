@@ -1,0 +1,7 @@
+jupyter
+pickleshare
+
+black
+flake8
+isort
+mypy
