@@ -14,13 +14,14 @@ lmd_lrc: 1
 lmd_klc: 1
 lmd_kld: 1
 lmd_c_real: 10
-lmd_c_psuedo: 0.01
+lmd_c_prior: 0.01
 
 lr: 0.001
 lr_lmd: 0.99
 
 # training
+labeled_sample_ratio: 0.3
 epochs: 100
-batch_size: 32
+batch_size: 1024
 accumulate_grad_batches: 1
 num_workers: 8

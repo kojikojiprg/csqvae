@@ -2,11 +2,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 
-from model.module.mnist import Decoder, Encoder
-from model.module.quantizer import GaussianVectorQuantizer
+from src.model.module.mnist import ClassificationHead, Decoder, Encoder
+from src.model.module.quantizer import GaussianVectorQuantizer
 
 
 class SQVAE(LightningModule):
@@ -22,13 +23,19 @@ class SQVAE(LightningModule):
         self.encoder = None
         self.decoder = None
         self.quantizer = None
+        self.cls_head = None
+        self.dim_x = 28 * 28
+        self.flg_arelbo = True
 
     def configure_model(self):
         if self.encoder is not None:
             return
         self.encoder = Encoder(self.config)
-        self.decoders = Decoder(self.config)
+        self.decoder = Decoder(self.config)
         self.quantizer = GaussianVectorQuantizer(self.config)
+        self.cls_head = ClassificationHead(self.config)
+        if not self.flg_arelbo:
+            self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.config.lr)
@@ -37,22 +44,14 @@ class SQVAE(LightningModule):
         )
         return [opt], [sch]
 
-    def forward(self, x, quantizer_is_train):
-        # x (b, nch, w, h)
-        # encoding
-        ze, c_logits = self.encoder(x)
+    def forward(self, x, is_train):
+        ze = self.encoder(x)
+
+        c_logits = self.cls_head(ze)
         c_prob = F.softmax(c_logits, dim=-1)
-        # ze (b, npts, latent_ndim)
-        # c_prob (b, n_clusters)
 
-        # quantization
-        zq, precision_q, prob, log_prob = self.quantizer(
-            ze, c_logits, quantizer_is_train
-        )
-        # zq (b, npts, latent_ndim)
-        # prob (b, npts, book_size)
+        zq, precision_q, prob, log_prob = self.quantizer(ze, c_logits, is_train)
 
-        # reconstruction
         recon_x = self.decoder(zq)
 
         return (
@@ -74,7 +73,15 @@ class SQVAE(LightningModule):
         )
 
     def loss_x(self, x, recon_x):
-        return F.mse_loss(recon_x, x)
+        mse = F.mse_loss(recon_x, x, reduction="sum") / x.size(0)
+        if self.flg_arelbo:
+            # "Preventing Posterior Collapse Induced by Oversmoothing in Gaussian VAE"
+            # https://arxiv.org/abs/2102.08663
+            loss_x = self.dim_x * torch.log(mse) / 2
+        else:
+            loss_x = mse / (2 * self.logvar_x.exp()) + self.dim_x * self.logvar_x / 2
+
+        return loss_x
 
     def loss_kl_continuous(self, ze, zq, precision_q):
         return torch.sum(((ze - zq) ** 2) * precision_q, dim=(1, 2)).mean()
@@ -115,32 +122,28 @@ class SQVAE(LightningModule):
         # clustering loss
         c_prior = torch.full_like(c_prob, 1 / self.n_clusters)
         c_prob = torch.clamp(c_prob, min=1e-10)
-        lc_psuedo = (c_prior * (c_prior.log() - c_prob.log())).mean()
-        loss_dict["c_psuedo"] = lc_psuedo.item()
+        lc_prior = (c_prior * (c_prior.log() - c_prob.log())).mean()
+        loss_dict["c_elbo"] = lc_prior.item()
 
-        if torch.all(torch.isnan(labels)):
+        if torch.all(labels == -1):  # all samples are unlabeled
             lc_real = 0.0
-            loss_dict["c_real"] = 0.0
+            loss_dict["c_true"] = 0.0
         else:
-            mask_supervised = ~torch.isnan(labels)
-            if torch.any(mask_supervised):
-                lc_real = F.cross_entropy(
-                    c_prob[mask_supervised], labels[mask_supervised], reduction="sum"
-                )
-                lc_real = lc_real / labels.size(0)
-                loss_dict["c_real"] = lc_real.item()
-            else:
-                lc_real = 0.0
-                loss_dict["c_real"] = 0.0
+            mask_supervised = labels != -1
+            lc_real = F.cross_entropy(
+                c_prob[mask_supervised], labels[mask_supervised], reduction="sum"
+            )
+            lc_real = lc_real / labels.size(0)
+            loss_dict["c_true"] = lc_real.item()
 
         loss_total = (
             lrc_x * self.config.lmd_lrc
             + kl_continuous * self.config.lmd_klc
             + kl_discrete * self.config.lmd_kld
             + lc_real * self.config.lmd_c_real
-            + lc_psuedo * self.config.lmd_c_psuedo
+            + lc_prior * self.config.lmd_c_prior
         )
-        loss_dict["total"] = loss_total.item()
+        loss_dict["loss"] = loss_total.item()
 
         self.log_dict(loss_dict, prog_bar=True, logger=True)
 

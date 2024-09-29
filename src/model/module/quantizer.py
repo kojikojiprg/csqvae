@@ -17,8 +17,8 @@ def gumbel_softmax_sample(logits, temperature):
     return F.softmax(y / temperature, dim=-1)
 
 
-def calc_distance(z_continuous, codebook, dim_dict):
-    z_continuous_flat = z_continuous.view(-1, dim_dict)
+def calc_distance(z_continuous, codebook, latent_ndim):
+    z_continuous_flat = z_continuous.view(-1, latent_ndim)
     distances = (
         torch.sum(z_continuous_flat**2, dim=1, keepdim=True)
         + torch.sum(codebook**2, dim=1)
@@ -48,8 +48,15 @@ class GaussianVectorQuantizer(nn.Module):
         )
 
     def forward(self, ze, c_logits, is_train):
-        # ze (b, n_pts, latent_ndim)
-        b, n_pts, latent_ndim = ze.size()
+        if ze.ndim == 3:
+            b, n_pts, ndim = ze.size()
+        elif ze.ndim == 4:
+            # image tensor
+            b, ndim, h, w = ze.size()
+            n_pts = h * w
+            ze = ze.permute(0, 2, 3, 1).contiguous()
+        else:
+            raise ValueError
 
         param_q = 1 + self.log_param_q.exp()
         precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
@@ -59,29 +66,33 @@ class GaussianVectorQuantizer(nn.Module):
             precision_q_cls = 0.5 / torch.clamp(param_q_cls, min=1e-10)
 
             # cumpute clustering probs
-            c_probs = gumbel_softmax_sample(c_logits * precision_q_cls, self.temperature)
+            c_probs = gumbel_softmax_sample(
+                c_logits * precision_q_cls, self.temperature
+            )
 
             # create latent tensors
             zq = torch.zeros_like(ze)
-            logits = torch.zeros((n_pts, self.book_size)).to(ze.device)
+            logits = torch.zeros((b, n_pts, self.book_size)).to(ze.device)
 
             # compute logits and zq from all books
             books = torch.cat(list(self.books.parameters()), dim=0)
-            books = books.view(-1, self.book_size, latent_ndim)
-            for j, book in enumerate(books):
-                logitj = -self.calc_distance(ze, book) * precision_q
-                logits = logits + logitj * c_probs[j]
-                encoding = gumbel_softmax_sample(logitj, self.temperature)
-                zq = zq + torch.matmul(encoding, book) * c_probs[j]
+            books = books.view(-1, self.book_size, ndim)
+            for i, book in enumerate(books):
+                c_probs_i = c_probs[:, i].view(b, 1)
+                logits_i = -calc_distance(ze, book, ndim) * precision_q
+                logits = logits + (logits_i.view(b, -1) * c_probs_i).view(b, n_pts, self.book_size)
+
+                encoding = gumbel_softmax_sample(logits_i, self.temperature)
+                zqi = torch.matmul(encoding, book).view(b, -1) * c_probs_i
+                zqi = zqi.view(b, h, w, ndim)
+                zq = zq + zqi
             # mean_prob = torch.mean(prob.detach(), dim=0)
         else:
             logits = torch.empty((0, n_pts, self.book_size)).to(ze.device)
-            books = torch.empty((0, self.book_size, latent_ndim)).to(ze.device)
+            books = torch.empty((0, self.book_size, ndim)).to(ze.device)
             for i, idx in enumerate(c_logits.argmax(dim=-1)):
                 book = self.books[idx]
-                books = torch.cat(
-                    [books, book.view(1, self.book_size, latent_ndim)], dim=0
-                )
+                books = torch.cat([books, book.view(1, self.book_size, ndim)], dim=0)
 
                 logit = -self.calc_distance(ze[i], book) * precision_q
                 logits = torch.cat(
@@ -98,13 +109,12 @@ class GaussianVectorQuantizer(nn.Module):
             encodings.scatter_(2, indices, 1)
             zq = torch.matmul(encodings, books)
             # mean_prob = torch.mean(encodings, dim=0)
-        # zq (b, npts, latent_ndim)
+
+        if zq.ndim == 4:
+            # image tensor
+            zq = zq.permute(0, 3, 1, 2)
 
         prob = torch.softmax(logits, dim=-1)
         log_prob = torch.log_softmax(logits, dim=-1)
-
-        logits = logits.view(b, n_pts, self.book_size)
-        prob = prob.view(b, n_pts, self.book_size)
-        log_prob = log_prob.view(b, n_pts, self.book_size)
 
         return zq, precision_q, prob, log_prob
