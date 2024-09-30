@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -161,19 +162,58 @@ class SQVAE(LightningModule):
             prob,
             log_prob,
         ) = self(x, False)
+        x = x.permute(0, 2, 3, 1)
+        recon_x = recon_x.permute(0, 2, 3, 1)
+        ze = ze.permute(0, 2, 3, 1)
+        zq = zq.permute(0, 2, 3, 1)
 
         results = []
         for i in range(len(x)):
             data = {
-                "x": x[i].cpu().numpy(),
-                "recon_x": recon_x[i].cpu().numpy(),
-                "ze": ze[i].cpu().numpy(),
-                "zq": zq[i].cpu().numpy(),
-                "book_prob": prob[i].cpu().numpy(),
-                "book_idx": prob[i].cpu().numpy().argmax(axis=1),
-                "label_prob": c_prob[i].cpu().numpy(),
-                "label": c_prob[i].cpu().numpy().argmax(),
-                "gt": labels[i].cpu().numpy().item(),
+                "x": x[i].detach().cpu().numpy(),
+                "recon_x": recon_x[i].detach().cpu().numpy(),
+                "ze": ze[i].detach().cpu().numpy(),
+                "zq": zq[i].detach().cpu().numpy(),
+                "book_prob": prob[i].detach().cpu().numpy(),
+                "book_idx": prob[i].detach().cpu().numpy().argmax(axis=1),
+                "label_prob": c_prob[i].detach().cpu().numpy(),
+                "label": c_prob[i].detach().cpu().numpy().argmax(),
+                "label_gt": labels[i].detach().cpu().numpy().item(),
+            }
+            results.append(data)
+
+        return results
+
+    def sample(
+        self, c: int, nsamples: int, size: Tuple[int, int], seed: int = 42
+    ):
+        torch.random.manual_seed(seed)
+
+        if len(size) == 1 or isinstance(size, int):
+            npts = size
+        elif len(size) == 2:
+            npts = size[0] * size[1]
+
+        # sample zq from book
+        book = self.quantizer.books[c]
+        indices = torch.randint(0, len(book), (nsamples * npts,)).to(self.device)
+        indices = indices.view(nsamples, npts, 1)
+        encodings = torch.zeros(nsamples, npts, len(book)).to(self.device)
+        encodings.scatter_(2, indices, 1)
+        zq = torch.matmul(encodings, book.view(1, len(book), -1))
+        zq = zq.view(nsamples, size[0], size[1], -1)
+
+        # generate samples
+        generated_x = self.decoder(zq.permute(0, 3, 1, 2))
+        generated_x = generated_x.permute(0, 2, 3, 1)
+
+        results = []
+        for i in range(nsamples):
+            data = {
+                "gen_x": generated_x[i].detach().cpu().numpy(),
+                "zq": zq[i].detach().cpu().numpy(),
+                "book_idx": indices[i].detach().cpu().numpy(),
+                "gt": c,
             }
             results.append(data)
 

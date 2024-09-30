@@ -69,7 +69,7 @@ if __name__ == "__main__":
     model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
 
     # load dataset
-    mnist = MNIST(True, config.labeled_sample_ratio, 42, "data/", download=True)
+    mnist = MNIST(True, config.n_labeled_samples, 42, "data/", download=True)
     dataloader = DataLoader(
         mnist,
         config.batch_size,
