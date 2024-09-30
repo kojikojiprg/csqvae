@@ -61,6 +61,7 @@ class SQVAE(LightningModule):
 
         c_logits = self.cls_head(ze)
         c_prob = F.softmax(c_logits, dim=-1)
+        c_log_prob = F.log_softmax(c_logits, dim=-1)
 
         zq, precision_q, prob, log_prob = self.quantizer(ze, c_logits, is_train)
 
@@ -68,12 +69,13 @@ class SQVAE(LightningModule):
 
         return (
             recon_x,
-            c_prob,
             ze,
             zq,
             precision_q,
             prob,
             log_prob,
+            c_prob,
+            c_log_prob,
         )
 
     def calc_temperature(self):
@@ -111,12 +113,13 @@ class SQVAE(LightningModule):
         # forward
         (
             recon_x,
-            c_prob,
             ze,
             zq,
             precision_q,
             prob,
             log_prob,
+            c_prob,
+            c_log_prob,
         ) = self(x, True)
 
         # ELBO loss
@@ -134,7 +137,8 @@ class SQVAE(LightningModule):
         # clustering loss
         c_prior = torch.full_like(c_prob, 1 / self.n_clusters)
         c_prob = torch.clamp(c_prob, min=1e-10)
-        lc_prior = (c_prior * (c_prior.log() - c_prob.log())).mean()
+        lc_prior = (c_prior * (c_prior.log() - c_log_prob)).mean()
+        # lc_prior = self.loss_kl_discrete(c_prob, c_log_prob)
         loss_dict["c_elbo"] = lc_prior.item()
 
         if torch.all(labels == -1):  # all samples are unlabeled
@@ -166,12 +170,13 @@ class SQVAE(LightningModule):
 
         (
             recon_x,
-            c_prob,
             ze,
             zq,
             precision_q,
             prob,
             log_prob,
+            c_prob,
+            c_log_prob,
         ) = self(x, False)
         x = x.permute(0, 2, 3, 1)
         recon_x = recon_x.permute(0, 2, 3, 1)

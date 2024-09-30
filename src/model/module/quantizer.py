@@ -18,11 +18,11 @@ def gumbel_softmax_sample(logits, temperature):
 
 
 def calc_distance(ze, book, nch):
-    z_continuous_flat = ze.view(-1, nch)
+    ze = ze.view(-1, nch)
     distances = (
-        torch.sum(z_continuous_flat**2, dim=1, keepdim=True)
+        torch.sum(ze**2, dim=1, keepdim=True)
         + torch.sum(book**2, dim=1)
-        - 2 * torch.matmul(z_continuous_flat, book.t())
+        - 2 * torch.matmul(ze, book.t())
     )
 
     return distances
@@ -93,8 +93,8 @@ class GaussianVectorQuantizer(nn.Module):
         else:
             logits = torch.empty((0, npts, self.book_size)).to(ze.device)
             books = torch.empty((0, self.book_size, nch)).to(ze.device)
-            for i, idx in enumerate(c_logits.argmax(dim=-1)):
-                book = self.books[idx]
+            for i, c in enumerate(c_logits.argmax(dim=-1)):
+                book = self.books[c]
                 books = torch.cat([books, book.view(1, self.book_size, nch)], dim=0)
 
                 logit = -calc_distance(ze[i], book, nch) * precision_q
