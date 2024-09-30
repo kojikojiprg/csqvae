@@ -4,25 +4,25 @@ n_resblocks: 2
 latent_ndim: 64
 book_size: 128
 
-temp_init: 0.5
-temp_decay: 0.001
+temp_init: 1.0
+temp_decay: 0.00001
 temp_min: 0.01
 param_q_init: 10
-param_q_cls_init: 2
+param_q_cls_init: 10
 
 # optim
 lmd_lrc: 1
-lmd_klc: 10
+lmd_klc: 1
 lmd_kld: 1
 lmd_c_real: 1
 lmd_c_prior: 1
 
 lr: 0.001
-lr_lmd: 0.99
+# lr_lmd: 0.99
 
 # training
 n_labeled_samples: 1000
 epochs: 100
-batch_size: 1024
+batch_size: 32
 accumulate_grad_batches: 1
 num_workers: 8

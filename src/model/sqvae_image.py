@@ -11,6 +11,15 @@ from src.model.module.mnist import ClassificationHead, Decoder, Encoder
 from src.model.module.quantizer import GaussianVectorQuantizer
 
 
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find("BatchNorm") != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+
+
 class SQVAE(LightningModule):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
@@ -37,13 +46,15 @@ class SQVAE(LightningModule):
         self.cls_head = ClassificationHead(self.config)
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
+        self.apply(weights_init)
 
     def configure_optimizers(self):
         opt = torch.optim.Adam(self.parameters(), lr=self.config.lr)
-        sch = torch.optim.lr_scheduler.LambdaLR(
-            opt, lambda epoch: self.config.lr_lmd**epoch
-        )
-        return [opt], [sch]
+        return opt
+        # sch = torch.optim.lr_scheduler.LambdaLR(
+        #     opt, lambda epoch: self.config.lr_lmd**epoch
+        # )
+        # return [opt], [sch]
 
     def forward(self, x, is_train):
         ze = self.encoder(x)
@@ -184,9 +195,7 @@ class SQVAE(LightningModule):
 
         return results
 
-    def sample(
-        self, c: int, nsamples: int, size: Tuple[int, int], seed: int = 42
-    ):
+    def sample(self, c: int, nsamples: int, size: Tuple[int, int], seed: int = 42):
         torch.random.manual_seed(seed)
 
         if len(size) == 1 or isinstance(size, int):
