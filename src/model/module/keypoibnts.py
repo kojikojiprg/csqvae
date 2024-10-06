@@ -111,24 +111,22 @@ class Decoder(nn.Module):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
         if not config.mask_leg:
-            self.n_pts = (17 + 2) * 2
+            n_pts = (17 + 2) * 2
         else:  # mask ankles and knees
-            self.n_pts = (17 - 4 + 2) * 2
+            n_pts = (17 - 4 + 2) * 2
 
-        self.decoders = nn.ModuleList(
-            [DecoderModule(self.config) for _ in range(self.n_pts)]
-        )
+        self.decoders = nn.ModuleList([DecoderModule(config) for _ in range(n_pts * 2)])
 
     def forward(self, x_vis, x_spc, zq):
         b, seq_len = x_vis.size()[:2]
-        x_vis = x_vis.view(b, seq_len, 17 * 2)
+        x_vis = x_vis.view(b, seq_len, -1)
         recon_x_vis = torch.empty((b, seq_len, 0)).to(self.device)
         for i, decoder in enumerate(self.decoders[: 17 * 2]):
             recon_x = decoder(x_vis[:, :, i], zq[:, i, :])
             recon_x_vis = torch.cat([recon_x_vis, recon_x], dim=2)
         recon_x_vis = recon_x_vis.view(b, seq_len, 17, 2)
 
-        x_spc = x_spc.view(b, seq_len, 2 * 2)
+        x_spc = x_spc.view(b, seq_len, -1)
         recon_x_spc = torch.empty((b, seq_len, 0)).to(self.device)
         for i, decoder in enumerate(self.decoders[17 * 2 :]):
             recon_x = decoder(x_spc[:, :, i], zq[:, i, :])
