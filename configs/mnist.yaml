@@ -8,7 +8,7 @@ temp_init: 1.0
 temp_decay: 0.00001
 temp_min: 0.01
 param_q_init: 10
-param_q_cls_init: 20
+param_q_cls_init: 10
 
 # optim
 lmd_lrc: 1
@@ -18,11 +18,11 @@ lmd_c_real: 10
 lmd_c_prior: 0.01
 
 lr: 0.001
-# lr_lmd: 0.99
+lr_lmd: 0.95
 
 # training
 n_labeled_samples: 1000
 epochs: 100
-batch_size: 32
+batch_size: 128
 accumulate_grad_batches: 1
 num_workers: 8

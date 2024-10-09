@@ -49,12 +49,9 @@ class SQVAE(LightningModule):
         self.apply(weights_init)
 
     def configure_optimizers(self):
-        opt = torch.optim.Adam(self.parameters(), lr=self.config.lr)
-        return opt
-        # sch = torch.optim.lr_scheduler.LambdaLR(
-        #     opt, lambda epoch: self.config.lr_lmd**epoch
-        # )
-        # return [opt], [sch]
+        opt = torch.optim.RAdam(self.parameters(), lr=self.config.lr)
+        sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
+        return [opt], [sch]
 
     def forward(self, x, is_train):
         ze = self.encoder(x)
@@ -137,8 +134,11 @@ class SQVAE(LightningModule):
         # clustering loss
         c_prior = torch.full_like(c_prob, 1 / self.n_clusters)
         c_prob = torch.clamp(c_prob, min=1e-10)
-        lc_prior = (c_prior * (c_prior.log() - c_log_prob)).mean()
-        # lc_prior = self.loss_kl_discrete(c_prob, c_log_prob)
+        # lc_prior = (c_prior * (c_prior.log() - c_log_prob)).mean()
+        # lc_prior = torch.sum(
+        #     c_log_prob * (c_log_prob - c_prior.log()), dim=(0, 1)
+        # ).mean()
+        lc_prior = F.kl_div(c_prob.log(), c_prior, reduction="batchmean")
         loss_dict["c_elbo"] = lc_prior.item()
 
         if torch.all(labels == -1):  # all samples are unlabeled
