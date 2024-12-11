@@ -24,11 +24,16 @@ class SQVAE(LightningModule):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
         self.config = config
+        self.n_clusters = config.n_clusters
+        self.temp_init_cls = config.temp_init_cls
+        self.temp_decay_cls = config.temp_decay_cls
+        self.temp_min_cls = config.temp_min_cls
+
         self.temp_init = config.temp_init
         self.temp_decay = config.temp_decay
         self.temp_min = config.temp_min
+
         self.latent_ndim = config.latent_ndim
-        self.n_clusters = config.n_clusters
 
         self.encoder = None
         self.decoder = None
@@ -50,8 +55,9 @@ class SQVAE(LightningModule):
 
     def configure_optimizers(self):
         opt = torch.optim.RAdam(self.parameters(), lr=self.config.lr)
-        sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
-        return [opt], [sch]
+        return opt
+        # sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
+        # return [opt], [sch]
 
     def forward(self, x, is_train):
         ze = self.encoder(x)
@@ -60,7 +66,7 @@ class SQVAE(LightningModule):
         c_prob = F.softmax(c_logits, dim=-1)
         c_log_prob = F.log_softmax(c_logits, dim=-1)
 
-        zq, precision_q, prob, log_prob = self.quantizer(ze, c_logits, is_train)
+        zq, precision_q, prob, log_prob = self.quantizer(ze, c_prob, is_train)
 
         recon_x = self.decoder(zq)
 
@@ -75,11 +81,11 @@ class SQVAE(LightningModule):
             c_log_prob,
         )
 
-    def calc_temperature(self):
+    def calc_temperature(self, temp_init, temp_decay, temp_min):
         return np.max(
             [
-                self.temp_init * np.exp(-self.temp_decay * self.global_step),
-                self.temp_min,
+                temp_init * np.exp(-temp_decay * self.global_step),
+                temp_min,
             ]
         )
 
@@ -104,7 +110,9 @@ class SQVAE(LightningModule):
         x, labels = batch
 
         # update temperature of gumbel softmax
-        temp_cur = self.calc_temperature()
+        temp_cur = self.calc_temperature(self.temp_init_cls, self.temp_decay_cls, self.temp_min_cls)
+        self.cls_head.temperature = temp_cur
+        temp_cur = self.calc_temperature(self.temp_init, self.temp_decay, self.temp_min)
         self.quantizer.temperature = temp_cur
 
         # forward
@@ -128,16 +136,12 @@ class SQVAE(LightningModule):
             kl_discrete=kl_discrete.item(),
             kl_continuous=kl_continuous.item(),
             log_param_q=self.quantizer.log_param_q.item(),
-            log_param_q_cls=self.quantizer.log_param_q_cls.item(),
+            log_param_q_cls=self.cls_head.log_param_q_cls.item(),
         )
 
         # clustering loss
         c_prior = torch.full_like(c_prob, 1 / self.n_clusters)
         c_prob = torch.clamp(c_prob, min=1e-10)
-        # lc_prior = (c_prior * (c_prior.log() - c_log_prob)).mean()
-        # lc_prior = torch.sum(
-        #     c_log_prob * (c_log_prob - c_prior.log()), dim=(0, 1)
-        # ).mean()
         lc_prior = F.kl_div(c_prob.log(), c_prior, reduction="batchmean")
         loss_dict["c_elbo"] = lc_prior.item()
 
@@ -146,10 +150,7 @@ class SQVAE(LightningModule):
             loss_dict["c_true"] = 0.0
         else:
             mask_supervised = labels != -1
-            lc_real = F.cross_entropy(
-                c_prob[mask_supervised], labels[mask_supervised], reduction="sum"
-            )
-            lc_real = lc_real / labels.size(0)
+            lc_real = F.cross_entropy(c_prob[mask_supervised], labels[mask_supervised])
             loss_dict["c_true"] = lc_real.item()
 
         loss_total = (

@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
+import numpy as np
+import torch
 import torch.nn as nn
 
-from .nn.resblock import ResidualBlock
 from .nn.feedforward import MLP
+from .nn.resblock import ResidualBlock
 
 
 class ClassificationHead(nn.Module):
@@ -19,10 +21,20 @@ class ClassificationHead(nn.Module):
 
         self.mlp = MLP(4 * 4 * ndim * 2, config.n_clusters)
 
+        self.temperature = None
+        log_param_q_cls = np.log(config.param_q_cls_init)
+        self.log_param_q_cls = nn.Parameter(
+            torch.tensor(log_param_q_cls, dtype=torch.float32)
+        )
+
     def forward(self, x):
         x = self.conv(x)
         x = x.view(x.size(0), -1)
         x = self.mlp(x)
+
+        param_q = self.log_param_q_cls.exp()
+        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        x = x * precision_q
         return x
 
 

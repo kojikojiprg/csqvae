@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
     # create model
     model = SQVAE(config)
-    ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
+    ddp = DDPStrategy(find_unused_parameters=True, process_group_backend="nccl")
     accumulate_grad_batches = config.accumulate_grad_batches
 
     logger = TensorBoardLogger("logs", name="mnist")
