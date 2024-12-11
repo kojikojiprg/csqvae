@@ -32,5 +32,6 @@ class MNIST(torchvision.datasets.MNIST):
             unique, counts = np.unique(labeled_targets, return_counts=True)
             summary = [("label", "count")]
             summary.extend([(i, c) for i, c in enumerate(counts)])
-            summary.append(("total", np.sum(counts).item()))
+            summary.append(("unlabeled", len(unlabeled_indices)))
+            summary.append(("total", len(random_indices)))
             np.savetxt(summary_path, summary, fmt="%s", delimiter="\t")
