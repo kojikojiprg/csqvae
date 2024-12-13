@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 
 from src.model.module.mnist import ClassificationHead, Decoder, Encoder
-from src.model.module.quantizer import GaussianVectorQuantizer
+from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_sample
 
 
 def weights_init(m):
@@ -61,24 +61,32 @@ class SQVAE(LightningModule):
 
     def forward(self, x, is_train):
         ze = self.encoder(x)
+        b, ndim, h, w = ze.size()
+        ze_flat = ze.permute(0, 2, 3, 1).contiguous()
+        ze_flat = ze_flat.view(b, -1, ndim)
 
-        c_logits = self.cls_head(ze)
-        c_prob = F.softmax(c_logits, dim=-1)
-        c_log_prob = F.log_softmax(c_logits, dim=-1)
+        zq, precision_q, logits = self.quantizer(ze_flat, is_train)
 
-        zq, precision_q, prob, log_prob = self.quantizer(ze, c_prob, is_train)
+        c_logits = self.cls_head(zq)
+        if is_train:
+            c_probs = gumbel_softmax_sample(c_logits, self.cls_head.temperature)
+        else:
+            c_probs = F.softmax(c_logits, dim=-1)
 
+        zq = zq.view(b, h, w, ndim)
+        zq = zq.permute(0, 3, 1, 2)
         recon_x = self.decoder(zq)
+
+        logits_sampled = self.quantizer.sample_logits_from_c(c_probs)
 
         return (
             recon_x,
             ze,
             zq,
             precision_q,
-            prob,
-            log_prob,
-            c_prob,
-            c_log_prob,
+            logits,
+            logits_sampled,
+            c_logits,
         )
 
     def calc_temperature(self, temp_init, temp_decay, temp_min):
@@ -106,11 +114,32 @@ class SQVAE(LightningModule):
     def loss_kl_discrete(self, prob, log_prob):
         return torch.sum(prob * log_prob, dim=(0, 1)).mean()
 
+    def loss_c_elbo(self, c_logits):
+        prob = F.softmax(c_logits, dim=-1)
+        log_prob = F.log_softmax(c_logits, dim=-1)
+        lc_elbo = torch.sum(prob * log_prob, dim=(0, 1)).mean()
+        return lc_elbo
+
+    def loss_c_real(self, c_logits, labels):
+        c_prob = F.softmax(c_logits, dim=-1)
+        if torch.all(labels == -1):  # all samples are unlabeled
+            lc_real = 0.0
+        else:
+            mask_supervised = labels != -1
+            lc_real = F.cross_entropy(
+                c_prob[mask_supervised], labels[mask_supervised], reduction="sum"
+            )
+            lc_real = lc_real / c_prob.size(0)
+
+        return lc_real
+
     def training_step(self, batch, batch_idx):
         x, labels = batch
 
         # update temperature of gumbel softmax
-        temp_cur = self.calc_temperature(self.temp_init_cls, self.temp_decay_cls, self.temp_min_cls)
+        temp_cur = self.calc_temperature(
+            self.temp_init_cls, self.temp_decay_cls, self.temp_min_cls
+        )
         self.cls_head.temperature = temp_cur
         temp_cur = self.calc_temperature(self.temp_init, self.temp_decay, self.temp_min)
         self.quantizer.temperature = temp_cur
@@ -121,16 +150,18 @@ class SQVAE(LightningModule):
             ze,
             zq,
             precision_q,
-            prob,
-            log_prob,
-            c_prob,
-            c_log_prob,
+            logits,
+            logits_sampled,
+            c_logits,
         ) = self(x, True)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(ze, zq, precision_q)
-        kl_discrete = self.loss_kl_discrete(prob, log_prob)
+        # kl_discrete = self.loss_kl_discrete(prob, log_prob)
+        kl_discrete = F.kl_div(
+            logits.log_softmax(dim=-1), logits_sampled.softmax(dim=-1), reduce="sum"
+        ) / x.size(0)
         loss_dict = dict(
             x=lrc_x.item(),
             kl_discrete=kl_discrete.item(),
@@ -140,25 +171,17 @@ class SQVAE(LightningModule):
         )
 
         # clustering loss
-        c_prior = torch.full_like(c_prob, 1 / self.n_clusters)
-        c_prob = torch.clamp(c_prob, min=1e-10)
-        lc_prior = F.kl_div(c_prob.log(), c_prior, reduction="batchmean")
-        loss_dict["c_elbo"] = lc_prior.item()
-
-        if torch.all(labels == -1):  # all samples are unlabeled
-            lc_real = 0.0
-            loss_dict["c_true"] = 0.0
-        else:
-            mask_supervised = labels != -1
-            lc_real = F.cross_entropy(c_prob[mask_supervised], labels[mask_supervised])
-            loss_dict["c_true"] = lc_real.item()
+        lc_elbo = self.loss_c_elbo(c_logits)
+        loss_dict["c_elbo"] = lc_elbo.item()
+        lc_real = self.loss_c_real(c_logits, labels)
+        loss_dict["c_real"] = lc_real.item()
 
         loss_total = (
             lrc_x * self.config.lmd_lrc
             + kl_continuous * self.config.lmd_klc
             + kl_discrete * self.config.lmd_kld
             + lc_real * self.config.lmd_c_real
-            + lc_prior * self.config.lmd_c_prior
+            + lc_elbo * self.config.lmd_c_prior
         )
         loss_dict["loss"] = loss_total.item()
 
@@ -174,15 +197,16 @@ class SQVAE(LightningModule):
             ze,
             zq,
             precision_q,
-            prob,
-            log_prob,
-            c_prob,
-            c_log_prob,
+            logits,
+            logits_sampled,
+            c_logits,
         ) = self(x, False)
         x = x.permute(0, 2, 3, 1)
         recon_x = recon_x.permute(0, 2, 3, 1)
         ze = ze.permute(0, 2, 3, 1)
         zq = zq.permute(0, 2, 3, 1)
+        prob = logits.softmax(dim=-1)
+        c_prob = c_logits.softmax(dim=-1)
 
         results = []
         for i in range(len(x)):
@@ -201,24 +225,14 @@ class SQVAE(LightningModule):
 
         return results
 
-    def sample(self, c: int, nsamples: int, size: Tuple[int, int], seed: int = 42):
-        torch.random.manual_seed(seed)
-
-        if len(size) == 1 or isinstance(size, int):
-            npts = size
-        elif len(size) == 2:
-            npts = size[0] * size[1]
-
+    def sample(self, c: int, nsamples: int, size: Tuple[int, int]):
         # sample zq from book
-        book = self.quantizer.books[c]
-        indices = torch.randint(0, len(book), (nsamples * npts,)).to(self.device)
-        indices = indices.view(nsamples, npts, 1)
-        encodings = torch.zeros(nsamples, npts, len(book)).to(self.device)
-        encodings.scatter_(2, indices, 1)
-        zq = torch.matmul(encodings, book.view(1, len(book), -1))
-        zq = zq.view(nsamples, size[0], size[1], -1)
+        c_one_hot = torch.eye(self.n_clusters)[c].to(self.device)
+        c_one_hot = c_one_hot.unsqueeze(0).repeat(nsamples, 1, 1)
+        zq, logits = self.quantizer.sample_zq_from_c(c_one_hot, add_random=True)
 
         # generate samples
+        zq = zq.view(nsamples, size[0], size[1], self.latent_ndim)
         generated_x = self.decoder(zq.permute(0, 3, 1, 2))
         generated_x = generated_x.permute(0, 2, 3, 1)
 
@@ -227,7 +241,6 @@ class SQVAE(LightningModule):
             data = {
                 "gen_x": generated_x[i].detach().cpu().numpy(),
                 "zq": zq[i].detach().cpu().numpy(),
-                "book_idx": indices[i].detach().cpu().numpy(),
                 "gt": c,
             }
             results.append(data)

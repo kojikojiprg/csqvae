@@ -17,11 +17,11 @@ def gumbel_softmax_sample(logits, temperature):
     return F.softmax(y / temperature, dim=-1)
 
 
-def calc_distance(ze, books, n_clusters, book_size):
+def calc_distance(ze, book):
     distances = (
         torch.sum(ze**2, dim=-1, keepdim=True)
-        + torch.sum(books**2, dim=-1).view(n_clusters, 1, book_size)
-        - 2 * torch.matmul(ze, books.permute(0, 2, 1))
+        + torch.sum(book**2, dim=-1)
+        - 2 * torch.matmul(ze, book.t())
     )
 
     return distances
@@ -32,9 +32,13 @@ class GaussianVectorQuantizer(nn.Module):
         super().__init__()
         self.n_clusters = config.n_clusters
         self.book_size = config.book_size
-        self.books = nn.ParameterList(
+        self.ndim = config.latent_ndim
+        self.npts = config.latent_npts
+
+        self.book = nn.Parameter(torch.randn(self.book_size, config.latent_ndim))
+        self.weights = nn.ParameterList(
             [
-                nn.Parameter(torch.randn(self.book_size, config.latent_ndim))
+                nn.Parameter(torch.randn(config.latent_npts, self.book_size))
                 for _ in range(config.n_clusters)
             ]
         )
@@ -43,63 +47,56 @@ class GaussianVectorQuantizer(nn.Module):
         log_param_q = np.log(config.param_q_init)
         self.log_param_q = nn.Parameter(torch.tensor(log_param_q, dtype=torch.float32))
 
-    def forward(self, ze, c_probs, is_train):
-        if ze.ndim == 3:
-            b, npts, ndim = ze.size()
-        elif ze.ndim == 4:
-            # image tensor
-            b, ndim, h, w = ze.size()
-            npts = h * w
-            ze = ze.permute(0, 2, 3, 1).contiguous()
-        else:
-            raise ValueError
+    def forward(self, ze, is_train):
+        b = ze.size(0)
 
         param_q = self.log_param_q.exp()
         precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        logits = -calc_distance(ze.view(-1, self.ndim), self.book) * precision_q
 
         if is_train:
-            books = torch.cat(
-                [book.view(1, self.book_size, ndim) for book in self.books], dim=0
-            )
-            logits = torch.empty((0, self.n_clusters, npts, self.book_size)).to(ze.device)
-            zq = torch.empty((0, npts, ndim)).to(ze.device)
-            for i, c_prob in enumerate(c_probs):
-                ze_tmp = ze[i].view(1, -1, ndim).repeat(self.n_clusters, 1, 1)
-
-                logit = (
-                    -calc_distance(ze_tmp, books, self.n_clusters, self.book_size)
-                    * precision_q
-                )
-
-                logits = torch.cat([logits, logit.unsqueeze(0)], dim=0)
-                encodings = gumbel_softmax_sample(logits, self.temperature)
-
-                zq_tmp = torch.matmul(encodings, books) * c_prob.view(self.n_clusters, 1, 1)
-                # zq_tmp (1, n_clusters, npts, ndim)
-                zq_tmp = zq_tmp.sum(dim=1)
-                # zq_tmp (1, npts, ndim)
-            zq = torch.cat([zq, zq_tmp], dim=0)
+            encodings = gumbel_softmax_sample(logits, self.temperature)
+            zq = torch.mm(encodings, self.book)
         else:
-            books = torch.empty((0, self.book_size, ndim)).to(ze.device)
-            logits = torch.empty((0, npts, self.book_size)).to(ze.device)
-            for i, c in enumerate(c_probs.argmax(dim=-1)):
-                book = self.books[c]
-                books = torch.cat([books, book.view(1, self.book_size, ndim)], dim=0)
+            indices = torch.argmax(logits, dim=-1).unsqueeze(1)
+            encodings = torch.zeros(b * self.npts, self.book_size).to(ze.device)
+            encodings.scatter_(1, indices, 1)
+            zq = torch.mm(encodings, self.book)
 
-                logit = -calc_distance(ze[i], book, ndim) * precision_q
-                logits = torch.cat([logits, logit.unsqueeze(0)], dim=0)
+        logits = logits.view(b, -1, self.book_size)
+        zq = zq.view(b, -1, self.ndim)
 
-            indices = torch.argmax(logits, dim=2).unsqueeze(2)
-            encodings = torch.zeros(b, npts, self.book_size).to(ze.device)
-            encodings.scatter_(2, indices, 1)
-            zq = torch.matmul(encodings, books)
+        return zq, precision_q, logits
 
-        if ze.ndim == 4:
-            # image tensor
-            zq = zq.view(b, h, w, ndim)
-            zq = zq.permute(0, 3, 1, 2)
+    def sample_logits_from_c(self, c_probs):
+        weights = torch.cat([w.unsqueeze(0) for w in self.weights], dim=0)
+        # weights (n_clusters, npts, ndim)
 
-        prob = torch.softmax(logits, dim=-1)
-        log_prob = torch.log_softmax(logits, dim=-1)
+        b = c_probs.size(0)
+        logits = weights.unsqueeze(0).repeat(b, 1, 1, 1) * c_probs.view(
+            b, self.n_clusters, 1, 1
+        )
+        logits = logits.sum(dim=1)
 
-        return zq, precision_q, prob, log_prob
+        return logits
+
+    def sample_zq_from_c(self, c_probs, add_random):
+        b = c_probs.size(0)
+        logits = self.sample_logits_from_c(c_probs)
+        logits = logits.view(-1, self.book_size)
+
+        # if add_random:
+        #     logits = logits + torch.randn_like(logits)
+
+        indices = torch.argmax(logits, dim=-1).unsqueeze(1)
+        encodings = torch.zeros(b * self.npts, self.book_size).to(c_probs.device)
+        encodings.scatter_(1, indices, 1)
+        zq = torch.mm(encodings, self.book)
+
+        if add_random:
+            zq = zq + torch.randn_like(zq)
+
+        logits = logits.view(b, -1, self.book_size)
+        zq = zq.view(b, -1, self.ndim)
+
+        return zq, logits
