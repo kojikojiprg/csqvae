@@ -62,19 +62,22 @@ class CSQVAE(LightningModule):
     def forward(self, x, is_train):
         ze = self.encoder(x)
         b, ndim, h, w = ze.size()
-        ze_flat = ze.permute(0, 2, 3, 1).contiguous()
-        ze_flat = ze_flat.view(b, -1, ndim)
+        ze = ze.permute(0, 2, 3, 1).contiguous()
+        ze = ze.view(b, -1, ndim)
 
-        zq, precision_q, logits = self.quantizer(ze_flat, is_train)
-
-        c_logits = self.cls_head(zq)
+        c_logits = self.cls_head(ze)
         if is_train:
             c_probs = gumbel_softmax_sample(c_logits, self.cls_head.temperature)
         else:
             c_probs = F.softmax(c_logits, dim=-1)
 
+        zq, precision_q, logits = self.quantizer(ze, is_train)
+
+        ze = ze.view(b, h, w, ndim)
+        ze = ze.permute(0, 3, 1, 2)
         zq = zq.view(b, h, w, ndim)
         zq = zq.permute(0, 3, 1, 2)
+
         recon_x = self.decoder(zq)
 
         logits_sampled = self.quantizer.sample_logits_from_c(c_probs)
@@ -227,11 +230,11 @@ class CSQVAE(LightningModule):
 
         return results
 
-    def sample(self, c_probs: torch.Tensor):
+    def sample(self, c_probs: torch.Tensor, add_random):
         c_probs = c_probs.to(self.device)
         b = c_probs.size(0)
         # sample zq from book
-        zq, logits = self.quantizer.sample_zq_from_c(c_probs, add_random=True)
+        zq, logits = self.quantizer.sample_zq_from_c(c_probs, add_random=add_random)
 
         # generate samples
         h, w = self.latent_size

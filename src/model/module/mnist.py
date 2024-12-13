@@ -28,7 +28,7 @@ class ClassificationHead(nn.Module):
         self.mlp = MLP(config.latent_ndim, config.n_clusters)
 
         self.temperature = None
-        log_param_q_cls = np.log(config.param_q_cls_init)
+        log_param_q_cls = np.log(config.param_q_init_cls)
         self.log_param_q_cls = nn.Parameter(
             torch.tensor(log_param_q_cls, dtype=torch.float32)
         )

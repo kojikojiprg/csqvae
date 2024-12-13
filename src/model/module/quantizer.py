@@ -36,6 +36,7 @@ class GaussianVectorQuantizer(nn.Module):
         self.npts = config.latent_npts
 
         self.book = nn.Parameter(torch.randn(self.book_size, config.latent_ndim))
+
         self.weights = nn.ParameterList(
             [
                 nn.Parameter(torch.randn(config.latent_npts, self.book_size))

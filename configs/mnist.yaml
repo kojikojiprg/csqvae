@@ -1,6 +1,6 @@
 # clustering
 n_clusters: 10
-param_q_cls_init: 1
+param_q_init_cls: 1
 temp_init_cls: 1.0
 temp_decay_cls: 0.0001
 temp_min_cls: 0.0000000001
@@ -17,14 +17,14 @@ n_resblocks: 2
 latent_ndim: 64
 latent_npts: 49  # (w, h) = (7, 7)
 nlayers: 3
-nheads: 4
+nheads: 2
 dropout: 0.1
 
 # optim
 lmd_lrc: 1
 lmd_klc: 1
-lmd_kld: 1
-lmd_c_elbo: 0.01
+lmd_kld: 0.000001
+lmd_c_elbo: 0.1
 lmd_c_real: 10
 
 lr: 0.001
