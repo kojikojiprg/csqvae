@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -20,7 +19,7 @@ def weights_init(m):
         nn.init.constant_(m.bias.data, 0)
 
 
-class SQVAE(LightningModule):
+class CSQVAE(LightningModule):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
         self.config = config
@@ -34,6 +33,8 @@ class SQVAE(LightningModule):
         self.temp_min = config.temp_min
 
         self.latent_ndim = config.latent_ndim
+        size = np.sqrt(config.latent_npts).astype(int)
+        self.latent_size = (size, size)
 
         self.encoder = None
         self.decoder = None
@@ -55,9 +56,8 @@ class SQVAE(LightningModule):
 
     def configure_optimizers(self):
         opt = torch.optim.RAdam(self.parameters(), lr=self.config.lr)
-        return opt
-        # sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
-        # return [opt], [sch]
+        sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
+        return [opt], [sch]
 
     def forward(self, x, is_train):
         ze = self.encoder(x)
@@ -123,7 +123,7 @@ class SQVAE(LightningModule):
     def loss_c_real(self, c_logits, labels):
         c_prob = F.softmax(c_logits, dim=-1)
         if torch.all(labels == -1):  # all samples are unlabeled
-            lc_real = 0.0
+            lc_real = torch.Tensor([0.0]).to(self.device)
         else:
             mask_supervised = labels != -1
             lc_real = F.cross_entropy(
@@ -225,23 +225,24 @@ class SQVAE(LightningModule):
 
         return results
 
-    def sample(self, c: int, nsamples: int, size: Tuple[int, int]):
+    def sample(self, c_probs: torch.Tensor):
+        c_probs = c_probs.to(self.device)
+        b = c_probs.size(0)
         # sample zq from book
-        c_one_hot = torch.eye(self.n_clusters)[c].to(self.device)
-        c_one_hot = c_one_hot.unsqueeze(0).repeat(nsamples, 1, 1)
-        zq, logits = self.quantizer.sample_zq_from_c(c_one_hot, add_random=True)
+        zq, logits = self.quantizer.sample_zq_from_c(c_probs, add_random=True)
 
         # generate samples
-        zq = zq.view(nsamples, size[0], size[1], self.latent_ndim)
+        h, w = self.latent_size
+        zq = zq.view(b, h, w, self.latent_ndim)
         generated_x = self.decoder(zq.permute(0, 3, 1, 2))
         generated_x = generated_x.permute(0, 2, 3, 1)
 
         results = []
-        for i in range(nsamples):
+        for i in range(b):
             data = {
                 "gen_x": generated_x[i].detach().cpu().numpy(),
                 "zq": zq[i].detach().cpu().numpy(),
-                "gt": c,
+                "gt": c_probs[i].argmax(dim=-1).cpu(),
             }
             results.append(data)
 

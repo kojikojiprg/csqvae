@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 sys.path.append(".")
 from src.data.mnist import MNIST
-from src.model.sqvae_image import SQVAE
+from src.model.sqvae_image import CSQVAE
 from src.utils import yaml_handler
 
 if __name__ == "__main__":
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     )
 
     # create model
-    model = SQVAE(config)
+    model = CSQVAE(config)
     ddp = DDPStrategy(find_unused_parameters=True, process_group_backend="nccl")
     accumulate_grad_batches = config.accumulate_grad_batches
 

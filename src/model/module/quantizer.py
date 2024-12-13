@@ -85,16 +85,16 @@ class GaussianVectorQuantizer(nn.Module):
         logits = self.sample_logits_from_c(c_probs)
         logits = logits.view(-1, self.book_size)
 
-        # if add_random:
-        #     logits = logits + torch.randn_like(logits)
+        if add_random:
+            logits = logits + torch.randn_like(logits)
 
         indices = torch.argmax(logits, dim=-1).unsqueeze(1)
         encodings = torch.zeros(b * self.npts, self.book_size).to(c_probs.device)
         encodings.scatter_(1, indices, 1)
         zq = torch.mm(encodings, self.book)
 
-        if add_random:
-            zq = zq + torch.randn_like(zq)
+        # if add_random:
+        #     zq = zq + torch.randn_like(zq)
 
         logits = logits.view(b, -1, self.book_size)
         zq = zq.view(b, -1, self.ndim)

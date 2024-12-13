@@ -3,18 +3,18 @@ n_clusters: 10
 param_q_cls_init: 1
 temp_init_cls: 1.0
 temp_decay_cls: 0.001
-temp_min_cls: 0.0000000001
+temp_min_cls: 0.0
 
 # quantization
 book_size: 128
 param_q_init: 10
 temp_init: 1.0
 temp_decay: 0.00001
-temp_min: 0.0000000001
+temp_min: 0.0
 
 # model
 n_resblocks: 2
-latent_ndim: 16
+latent_ndim: 64
 latent_npts: 49  # (w, h) = (7, 7)
 nlayers: 3
 nheads: 1
@@ -31,8 +31,8 @@ lr: 0.001
 lr_lmd: 0.95
 
 # training
-n_labeled_samples: 60000
+n_labeled_samples: 1000
 epochs: 100
-batch_size: 128
+batch_size: 32
 accumulate_grad_batches: 1
 num_workers: 8
