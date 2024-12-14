@@ -80,7 +80,16 @@ class CSQVAE(LightningModule):
 
         recon_x = self.decoder(zq)
 
-        logits_sampled = self.quantizer.sample_logits_from_c(c_probs)
+        if is_train:
+            zq_sampled, logits_sampled, mu_sampled = self.quantizer.sample_from_c(
+                c_probs, is_train
+            )
+            # zq_sampled = zq_sampled.view(b, h, w, ndim)
+            # zq_sampled = zq_sampled.permute(0, 3, 1, 2)
+        else:
+            # zq_sampled = None
+            logits_sampled = None
+            # mu_sampled = None
 
         return (
             recon_x,
@@ -230,11 +239,11 @@ class CSQVAE(LightningModule):
 
         return results
 
-    def sample(self, c_probs: torch.Tensor, add_random):
+    def sample(self, c_probs: torch.Tensor):
         c_probs = c_probs.to(self.device)
         b = c_probs.size(0)
         # sample zq from book
-        zq, logits = self.quantizer.sample_zq_from_c(c_probs, add_random=add_random)
+        zq, logits, mu = self.quantizer.sample_from_c(c_probs, False)
 
         # generate samples
         h, w = self.latent_size

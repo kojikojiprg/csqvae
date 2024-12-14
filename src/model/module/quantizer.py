@@ -37,10 +37,20 @@ class GaussianVectorQuantizer(nn.Module):
 
         self.book = nn.Parameter(torch.randn(self.book_size, config.latent_ndim))
 
-        self.weights = nn.ParameterList(
+        # self.weights = nn.ParameterList(
+        #     [
+        #         nn.Parameter(torch.randn(config.latent_npts, self.book_size))
+        #         for _ in range(config.n_clusters)
+        #     ]
+        # )
+
+        mu = [torch.randn(1, config.latent_ndim) for _ in range(config.n_clusters)]
+        self.mu = nn.ParameterList(
             [
-                nn.Parameter(torch.randn(config.latent_npts, self.book_size))
-                for _ in range(config.n_clusters)
+                nn.Parameter(
+                    torch.randn(config.latent_npts, config.latent_ndim) + mu[i]
+                )
+                for i in range(config.n_clusters)
             ]
         )
 
@@ -69,35 +79,23 @@ class GaussianVectorQuantizer(nn.Module):
 
         return zq, precision_q, logits
 
-    def sample_logits_from_c(self, c_probs):
-        weights = torch.cat([w.unsqueeze(0) for w in self.weights], dim=0)
-        # weights (n_clusters, npts, ndim)
-
+    def sample_from_c(self, c_probs, is_train):
         b = c_probs.size(0)
-        logits = weights.unsqueeze(0).repeat(b, 1, 1, 1) * c_probs.view(
-            b, self.n_clusters, 1, 1
-        )
-        logits = logits.sum(dim=1)
 
-        return logits
+        if is_train:
+            mu = torch.cat([m.unsqueeze(0) for m in self.mu], dim=0)
+            mu = mu.unsqueeze(0)
+            mu = torch.sum(
+                mu * c_probs.view(b, self.n_clusters, 1, 1), dim=1
+            )  # (b, npts, ndim)
+        else:
+            mu = torch.cat(
+                [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
+            )
 
-    def sample_zq_from_c(self, c_probs, add_random):
-        b = c_probs.size(0)
-        logits = self.sample_logits_from_c(c_probs)
-        logits = logits.view(-1, self.book_size)
+        z = torch.randn(b, self.npts, self.ndim).to(c_probs.device)
+        z = z + mu
 
-        if add_random:
-            logits = logits + torch.randn_like(logits)
+        zq, _, logits = self(z, is_train)
 
-        indices = torch.argmax(logits, dim=-1).unsqueeze(1)
-        encodings = torch.zeros(b * self.npts, self.book_size).to(c_probs.device)
-        encodings.scatter_(1, indices, 1)
-        zq = torch.mm(encodings, self.book)
-
-        # if add_random:
-        #     zq = zq + torch.randn_like(zq)
-
-        logits = logits.view(b, -1, self.book_size)
-        zq = zq.view(b, -1, self.ndim)
-
-        return zq, logits
+        return zq, logits, mu
