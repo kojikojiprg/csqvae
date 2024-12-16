@@ -57,11 +57,16 @@ class Encoder(nn.Module):
         latent_ndim = config.latent_ndim
         self.latent_ndim = config.latent_ndim
         self.conv1 = nn.Sequential(
-            nn.Conv2d(1, latent_ndim // 2, 4, 2, 1, bias=False),
+            nn.Conv2d(3, latent_ndim // 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(latent_ndim // 2),
             nn.ReLU(),
         )
-        self.conv2 = nn.Conv2d(latent_ndim // 2, latent_ndim, 4, 2, 1, bias=False)
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(latent_ndim // 2, latent_ndim, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(latent_ndim),
+            nn.ReLU(),
+        )
+        self.conv3 = nn.Conv2d(latent_ndim, latent_ndim, 3, 1, 1, bias=False)
 
         self.res_blocks = nn.ModuleList(
             [ResidualBlock(latent_ndim) for _ in range(config.n_resblocks)]
@@ -70,6 +75,7 @@ class Encoder(nn.Module):
     def forward(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
+        x = self.conv3(x)
 
         for res_block in self.res_blocks:
             x = res_block(x)
@@ -87,11 +93,16 @@ class Decoder(nn.Module):
         )
 
         self.conv1 = nn.Sequential(
+            nn.ConvTranspose2d(latent_ndim, latent_ndim, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(latent_ndim),
+            nn.ReLU(),
+        )
+        self.conv2 = nn.Sequential(
             nn.ConvTranspose2d(latent_ndim, latent_ndim // 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(latent_ndim // 2),
             nn.ReLU(),
         )
-        self.conv2 = nn.ConvTranspose2d(latent_ndim // 2, 1, 4, 2, 1, bias=False)
+        self.conv3 = nn.ConvTranspose2d(latent_ndim // 2, 3, 4, 2, 1, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
@@ -99,5 +110,6 @@ class Decoder(nn.Module):
             x = res_block(x)
         x = self.conv1(x)
         x = self.conv2(x)
+        x = self.conv3(x)
         x = self.sigmoid(x)
         return x

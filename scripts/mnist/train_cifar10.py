@@ -11,7 +11,7 @@ from lightning.pytorch.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 
 sys.path.append(".")
-from src.data.mnist import MNIST
+from src.data.cifar10 import CIFAR10
 from src.model.sqvae_image import CSQVAE
 from src.utils import yaml_handler
 
@@ -32,11 +32,11 @@ if __name__ == "__main__":
     pre_checkpoint_path = args.checkpoint
 
     # load config
-    config_path = "configs/mnist.yaml"
+    config_path = "configs/cifar10.yaml"
     config = yaml_handler.load(config_path)
 
     # create checkpoint directory of this version
-    checkpoint_dir = "models/mnist"
+    checkpoint_dir = "models/cifar10"
     ckpt_dirs = glob(os.path.join(checkpoint_dir, "*/"))
     ckpt_dirs = [d for d in ckpt_dirs if "version_" in d]
     if len(ckpt_dirs) > 0:
@@ -54,11 +54,11 @@ if __name__ == "__main__":
     if "WORLD_SIZE" not in os.environ:
         # copy config
         os.makedirs(checkpoint_dir, exist_ok=False)
-        copy_config_path = os.path.join(checkpoint_dir, "mnist.yaml")
+        copy_config_path = os.path.join(checkpoint_dir, "cifar10.yaml")
         shutil.copyfile(config_path, copy_config_path)
 
     # model checkpoint callback
-    filename = f"csqvae-mnist-d{config.latent_ndim}-bs{config.book_size}.ckpt"
+    filename = f"csqvae-cifar10-d{config.latent_ndim}-bs{config.book_size}.ckpt"
     model_checkpoint = ModelCheckpoint(
         checkpoint_dir,
         filename=filename + "-best-{epoch}",
@@ -70,9 +70,9 @@ if __name__ == "__main__":
 
     # load dataset
     summary_path = f"{checkpoint_dir}/summary_train_labels.tsv"
-    mnist = MNIST(True, config.n_labeled_samples, 42, "data/", True, summary_path)
+    cifar10 = CIFAR10(True, config.n_labeled_samples, 42, "data/", True, summary_path)
     dataloader = DataLoader(
-        mnist,
+        cifar10,
         config.batch_size,
         shuffle=True,
         num_workers=config.num_workers,
@@ -84,7 +84,7 @@ if __name__ == "__main__":
     ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
     accumulate_grad_batches = config.accumulate_grad_batches
 
-    logger = TensorBoardLogger("logs", name="mnist")
+    logger = TensorBoardLogger("logs", name="cifar10")
     trainer = Trainer(
         accelerator="cuda",
         strategy=ddp,

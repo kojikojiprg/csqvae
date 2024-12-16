@@ -1,7 +1,7 @@
 # dataset
-name: "mnist"
-dim_x: 784  # 28 * 28
-shape: [1, 28, 28]
+name: "cifar10"
+dim_x: 3072  # 3 * 32 * 32
+shape: [3, 32, 32]
 
 # clustering
 n_clusters: 10
@@ -11,16 +11,16 @@ temp_decay_cls: 0.0001
 temp_min_cls: 0.0000000001
 
 # quantization
-book_size: 128
+book_size: 512
 param_q_init: 10
 temp_init: 1.0
 temp_decay: 0.00001
 temp_min: 0.0000000001
 
 # model
-n_resblocks: 2
+n_resblocks: 6
 latent_ndim: 64
-latent_size: [7, 7]
+latent_size: [8, 8]
 nlayers: 3
 nheads: 2
 dropout: 0.1

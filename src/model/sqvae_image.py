@@ -6,7 +6,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 
-from src.model.module.mnist import ClassificationHead, Decoder, Encoder
+from src.model.module.cifar10 import ClassificationHead as ClassificationHead_CIFAR10
+from src.model.module.cifar10 import Decoder as Decoder_CIFAR10
+from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
+from src.model.module.mnist import ClassificationHead as ClassificationHead_MNIST
+from src.model.module.mnist import Decoder as Decoder_MNIST
+from src.model.module.mnist import Encoder as Encoder_MNIST
 from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_sample
 
 
@@ -23,6 +28,7 @@ class CSQVAE(LightningModule):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
         self.config = config
+        self.dataset_name = config.name
         self.n_clusters = config.n_clusters
         self.temp_init_cls = config.temp_init_cls
         self.temp_decay_cls = config.temp_decay_cls
@@ -33,23 +39,29 @@ class CSQVAE(LightningModule):
         self.temp_min = config.temp_min
 
         self.latent_ndim = config.latent_ndim
-        size = np.sqrt(config.latent_npts).astype(int)
-        self.latent_size = (size, size)
+        self.latent_size = config.latent_size
 
         self.encoder = None
         self.decoder = None
         self.quantizer = None
         self.cls_head = None
-        self.dim_x = 28 * 28
+        self.dim_x = config.dim_x
         self.flg_arelbo = True
 
     def configure_model(self):
         if self.encoder is not None:
             return
-        self.encoder = Encoder(self.config)
-        self.decoder = Decoder(self.config)
+
+        if self.dataset_name == "mnist":
+            self.encoder = Encoder_MNIST(self.config)
+            self.decoder = Decoder_MNIST(self.config)
+            self.cls_head = ClassificationHead_MNIST(self.config)
+        elif self.dataset_name == "cifar10":
+            self.encoder = Encoder_CIFAR10(self.config)
+            self.decoder = Decoder_CIFAR10(self.config)
+            self.cls_head = ClassificationHead_CIFAR10(self.config)
+
         self.quantizer = GaussianVectorQuantizer(self.config)
-        self.cls_head = ClassificationHead(self.config)
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
         self.apply(weights_init)
