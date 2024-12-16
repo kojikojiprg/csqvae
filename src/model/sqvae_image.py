@@ -12,6 +12,7 @@ from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
 from src.model.module.mnist import ClassificationHead as ClassificationHead_MNIST
 from src.model.module.mnist import Decoder as Decoder_MNIST
 from src.model.module.mnist import Encoder as Encoder_MNIST
+from src.model.module.pixelcnn import PixelCNN
 from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_sample
 
 
@@ -38,13 +39,15 @@ class CSQVAE(LightningModule):
         self.temp_decay = config.temp_decay
         self.temp_min = config.temp_min
 
+        self.book_size = config.book_size
         self.latent_ndim = config.latent_ndim
         self.latent_size = config.latent_size
 
         self.encoder = None
         self.decoder = None
-        self.quantizer = None
         self.cls_head = None
+        self.quantizer = None
+        self.pixelcnn = None
         self.dim_x = config.dim_x
         self.flg_arelbo = True
 
@@ -62,6 +65,8 @@ class CSQVAE(LightningModule):
             self.cls_head = ClassificationHead_CIFAR10(self.config)
 
         self.quantizer = GaussianVectorQuantizer(self.config)
+        self.pixelcnn = PixelCNN(self.config)
+
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
         self.apply(weights_init)
@@ -93,15 +98,13 @@ class CSQVAE(LightningModule):
         recon_x = self.decoder(zq)
 
         if is_train:
-            zq_sampled, logits_sampled, mu_sampled = self.quantizer.sample_from_c(
-                c_probs, is_train
-            )
-            # zq_sampled = zq_sampled.view(b, h, w, ndim)
-            # zq_sampled = zq_sampled.permute(0, 3, 1, 2)
+            indices = logits.argmax(-1)
+            indices = indices.view(b, self.latent_size[0], self.latent_size[1])
+            logits_prior = self.pixelcnn(indices, c_probs)
+            logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
         else:
-            # zq_sampled = None
-            logits_sampled = None
-            # mu_sampled = None
+            # zq_prior = None
+            logits_prior = None
 
         return (
             recon_x,
@@ -109,7 +112,7 @@ class CSQVAE(LightningModule):
             zq,
             precision_q,
             logits,
-            logits_sampled,
+            logits_prior,
             c_logits,
         )
 
@@ -135,11 +138,12 @@ class CSQVAE(LightningModule):
     def loss_kl_continuous(self, ze, zq, precision_q):
         return torch.sum(((ze - zq) ** 2) * precision_q, dim=(1, 2)).mean()
 
-    def loss_kl_discrete(self, logits, logits_sampled):
-        p = logits_sampled.softmax(dim=-1)
-        p_log = logits_sampled.log_softmax(dim=-1)
+    def loss_kl_discrete(self, logits, logits_prior, eps=1e-10):
+        q = logits.softmax(dim=-1)
         q_log = logits.log_softmax(dim=-1)
-        kl = torch.sum(p * (p_log - q_log), dim=(1, 2)).mean()
+        p_log = logits_prior.log_softmax(dim=-1)
+        kl = torch.sum(q * (q_log - p_log), dim=(1, 2)).mean()
+
         return kl
 
     def loss_c_elbo(self, c_logits):
@@ -179,14 +183,14 @@ class CSQVAE(LightningModule):
             zq,
             precision_q,
             logits,
-            logits_sampled,
+            logits_prior,
             c_logits,
         ) = self(x, True)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(ze, zq, precision_q)
-        kl_discrete = self.loss_kl_discrete(logits, logits_sampled)
+        kl_discrete = self.loss_kl_discrete(logits, logits_prior)
 
         # clustering loss
         lc_elbo = self.loss_c_elbo(c_logits)
@@ -223,7 +227,7 @@ class CSQVAE(LightningModule):
             zq,
             precision_q,
             logits,
-            logits_sampled,
+            logits_prior,
             c_logits,
         ) = self(x, False)
         x = x.permute(0, 2, 3, 1)
@@ -251,10 +255,14 @@ class CSQVAE(LightningModule):
         return results
 
     def sample(self, c_probs: torch.Tensor):
-        c_probs = c_probs.to(self.device)
+        c_probs = c_probs.to(self.device, torch.float32)
         b = c_probs.size(0)
         # sample zq from book
-        zq, logits, mu = self.quantizer.sample_from_c(c_probs, False)
+        # z, zq, logits, mu = self.quantizer.sample_from_c(c_probs, False)
+
+        indices = self.pixelcnn.sample_prior(c_probs)
+        indices = indices.view(b, -1)
+        zq = self.quantizer.sample_zq_from_indices(indices)
 
         # generate samples
         h, w = self.latent_size

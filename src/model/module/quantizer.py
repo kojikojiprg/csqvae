@@ -38,17 +38,6 @@ class GaussianVectorQuantizer(nn.Module):
 
         self.book = nn.Parameter(torch.randn(self.book_size, config.latent_ndim))
 
-        # mu = [torch.randn(1, config.latent_ndim) for _ in range(config.n_clusters)]
-        self.mu = nn.ParameterList(
-            [
-                nn.Parameter(
-                    # torch.randn(self.npts, config.latent_ndim) + mu[i]
-                    torch.randn(self.npts, config.latent_ndim)
-                )
-                for i in range(config.n_clusters)
-            ]
-        )
-
         self.temperature = None
         log_param_q = np.log(config.param_q_init)
         self.log_param_q = nn.Parameter(torch.tensor(log_param_q, dtype=torch.float32))
@@ -74,23 +63,14 @@ class GaussianVectorQuantizer(nn.Module):
 
         return zq, precision_q, logits
 
-    def sample_from_c(self, c_probs, is_train):
-        b = c_probs.size(0)
+    def sample_zq_from_indices(self, indices):
+        b = indices.size(0)
 
-        if is_train:
-            mu = torch.cat([m.unsqueeze(0) for m in self.mu], dim=0)
-            mu = mu.unsqueeze(0)
-            mu = torch.sum(
-                mu * c_probs.view(b, self.n_clusters, 1, 1), dim=1
-            )  # (b, npts, ndim)
-        else:
-            mu = torch.cat(
-                [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
-            )
+        indices = indices.view(-1, 1)
+        encodings = torch.zeros(b * self.npts, self.book_size).to(indices.device)
+        encodings.scatter_(1, indices, 1)
+        zq = torch.mm(encodings, self.book)
 
-        z = torch.randn(b, self.npts, self.ndim).to(c_probs.device)
-        z = z + mu
+        zq = zq.view(b, -1, self.ndim)
 
-        zq, _, logits = self(z, is_train)
-
-        return zq, logits, mu
+        return zq
