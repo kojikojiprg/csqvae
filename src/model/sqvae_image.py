@@ -124,12 +124,11 @@ class CSQVAE(LightningModule):
         return torch.sum(((ze - zq) ** 2) * precision_q, dim=(1, 2)).mean()
 
     def loss_kl_discrete(self, logits, logits_sampled):
-        kl_discrete = F.kl_div(
-            logits.log_softmax(dim=-1),
-            logits_sampled.softmax(dim=-1),
-            reduction="batchmean",
-        )
-        return kl_discrete
+        p = logits_sampled.softmax(dim=-1)
+        p_log = logits_sampled.log_softmax(dim=-1)
+        q_log = logits.log_softmax(dim=-1)
+        kl = torch.sum(p * (p_log - q_log), dim=(1, 2)).mean()
+        return kl
 
     def loss_c_elbo(self, c_logits):
         prob = F.softmax(c_logits, dim=-1)
