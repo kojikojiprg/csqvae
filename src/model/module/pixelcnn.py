@@ -48,7 +48,7 @@ class PixelCNN(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.layers.append(conv_block)
-        for _ in range(config.n_resblocks_pixelcnn):
+        for _ in range(config.n_cnnblocks_pixelcnn):
             conv_block = nn.Sequential(
                 MaskedConv2d(
                     mask_type="B",
@@ -66,7 +66,7 @@ class PixelCNN(nn.Module):
 
         self.emb_c = MLP(config.n_clusters, nch)
         self.layers_c = nn.ModuleList()
-        for _ in range(config.n_resblocks_pixelcnn + 1):
+        for _ in range(config.n_cnnblocks_pixelcnn + 1):
             self.layers_c.append(nn.Conv1d(nch, nch, 1, bias=False))
 
         self.out_conv = nn.Conv2d(

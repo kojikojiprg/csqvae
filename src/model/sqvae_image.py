@@ -74,6 +74,9 @@ class CSQVAE(LightningModule):
     def configure_optimizers(self):
         opt = torch.optim.RAdam(self.parameters(), lr=self.config.lr)
         sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
+        # sch = torch.optim.lr_scheduler.CosineAnnealingLR(
+        #     opt, self.config.t_max, self.config.lr_min
+        # )
         return [opt], [sch]
 
     def forward(self, x, is_train):
@@ -257,8 +260,6 @@ class CSQVAE(LightningModule):
     def sample(self, c_probs: torch.Tensor):
         c_probs = c_probs.to(self.device, torch.float32)
         b = c_probs.size(0)
-        # sample zq from book
-        # z, zq, logits, mu = self.quantizer.sample_from_c(c_probs, False)
 
         indices = self.pixelcnn.sample_prior(c_probs)
         indices = indices.view(b, -1)

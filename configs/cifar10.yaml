@@ -24,21 +24,23 @@ latent_size: [8, 8]
 nlayers: 6
 nheads: 4
 dropout: 0.1
-n_resblocks_pixelcnn: 12
+n_cnnblocks_pixelcnn: 12
 
 # optim
 lmd_lrc: 1
 lmd_klc: 1
-lmd_kld: 1
+lmd_kld: 0.001
 lmd_c_elbo: 1
 lmd_c_real: 10
 
 lr: 0.001
 lr_lmd: 0.99
+# t_max: 40
+# lr_min: 0.00001
 
 # training
 n_labeled_samples: 50000
-epochs: 100
-batch_size: 128
+epochs: 200
+batch_size: 256
 accumulate_grad_batches: 1
 num_workers: 4
