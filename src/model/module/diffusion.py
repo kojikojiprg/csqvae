@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from .nn.dit import DiTBlock
 from .nn.feedforward import MLP
@@ -68,23 +69,19 @@ class DiffusionModel(nn.Module):
         predicted_noise = self(z_t, t, c)
         return predicted_noise, noise
 
-    def sample(self, c, cfg_scale=3):
+    @torch.no_grad()
+    def sample(self, c):
         b = c.size(0)
-        z = torch.randn((b, self.latent_dim, self.latelt_size[0], self.latent_size[1]))
+        z = torch.randn((b, self.latent_size[0] * self.latent_size[1], self.latent_dim))
         z = z.to(c.device)
 
-        for i in reversed(range(1, self.noise_steps)):
-            t = torch.full(b, i).long().to(c.device)
+        for i in tqdm(list(reversed(range(1, self.noise_steps)))):
+            t = torch.full((b,), i).long().to(c.device)
             predicted_noise = self(z, t, c)
 
-            if cfg_scale > 0:
-                uncond_predicted_noise = self(z, t, None)
-                predicted_noise = torch.lerp(
-                    uncond_predicted_noise, predicted_noise, cfg_scale
-                )
-            alpha = self.alpha[t][:, None, None, None]
-            alpha_hat = self.alpha_hat[t][:, None, None, None]
-            beta = self.beta[t][:, None, None, None]
+            alpha = self.alpha[t][:, None, None]
+            alpha_hat = self.alpha_hat[t][:, None, None]
+            beta = self.beta[t][:, None, None]
             if i > 1:
                 noise = torch.randn_like(z)
             else:
