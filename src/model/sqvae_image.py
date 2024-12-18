@@ -5,19 +5,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
+from timm.models.vision_transformer import VisionTransformer
 
-from src.model.module.cifar10 import ClassificationHead as ClassificationHead_CIFAR10
 from src.model.module.cifar10 import Decoder as Decoder_CIFAR10
 from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
 from src.model.module.diffusion import DiffusionModel
-from src.model.module.mnist import ClassificationHead as ClassificationHead_MNIST
 from src.model.module.mnist import Decoder as Decoder_MNIST
 from src.model.module.mnist import Encoder as Encoder_MNIST
 from src.model.module.pixelcnn import PixelCNN
 from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_sample
 
+# from src.model.module.cifar10 import ClassificationHead as ClassificationHead_CIFAR10
+# from src.model.module.mnist import ClassificationHead as ClassificationHead_MNIST
+
 
 def weights_init(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
         nn.init.normal_(m.weight.data, 0.0, 0.02)
@@ -27,18 +34,28 @@ def weights_init(m):
 
 
 class CSQVAE(LightningModule):
-    def __init__(self, config: SimpleNamespace):
+    def __init__(self, config: SimpleNamespace, training_ddpm: bool = False):
         super().__init__()
         self.config = config
+        self.training_ddpm = training_ddpm
+
         self.dataset_name = config.name
         self.n_clusters = config.n_clusters
         self.temp_init_cls = config.temp_init_cls
         self.temp_decay_cls = config.temp_decay_cls
         self.temp_min_cls = config.temp_min_cls
+        self.temperature_cls = None
+        log_param_q_cls = np.log(config.param_q_init_cls)
+        self.log_param_q_cls = nn.Parameter(
+            torch.tensor(log_param_q_cls, dtype=torch.float32)
+        )
 
         self.temp_init = config.temp_init
         self.temp_decay = config.temp_decay
         self.temp_min = config.temp_min
+        self.temperature = None
+        log_param_q = np.log(config.param_q_init)
+        self.log_param_q = nn.Parameter(torch.tensor(log_param_q, dtype=torch.float32))
 
         self.book_size = config.book_size
         self.latent_dim = config.latent_dim
@@ -60,11 +77,20 @@ class CSQVAE(LightningModule):
         if self.dataset_name == "mnist":
             self.encoder = Encoder_MNIST(self.config)
             self.decoder = Decoder_MNIST(self.config)
-            self.cls_head = ClassificationHead_MNIST(self.config)
+            # self.cls_head = ClassificationHead_MNIST(self.config)
         elif self.dataset_name == "cifar10":
             self.encoder = Encoder_CIFAR10(self.config)
             self.decoder = Decoder_CIFAR10(self.config)
-            self.cls_head = ClassificationHead_CIFAR10(self.config)
+            # self.cls_head = ClassificationHead_CIFAR10(self.config)
+        self.cls_head = VisionTransformer(
+            self.config.x_shape[1:],
+            self.config.patch_size,
+            self.config.x_shape[0],
+            self.config.n_clusters,
+            embed_dim=self.config.latent_dim,
+            depth=self.config.nlayers,
+            num_heads=self.config.nheads,
+        )
 
         self.quantizer = GaussianVectorQuantizer(self.config)
         if self.config.gen_model == "pixelcnn":
@@ -76,26 +102,55 @@ class CSQVAE(LightningModule):
 
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
+
+        self.init_weights()
+
+        if self.training_ddpm:
+            self.encoder.requires_grad_(False)
+            self.decoder.requires_grad_(False)
+            self.cls_head.requires_grad_(False)
+            self.quantizer.requires_grad_(False)
+        else:
+            self.diffusion.requires_grad_(False)
+
+    def init_weights(self):
         self.apply(weights_init)
 
+        # Zero-out adaLN modulation layers in DiT blocks:
+        for block in self.diffusion.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
     def configure_optimizers(self):
-        opt = torch.optim.RAdam(self.parameters(), lr=self.config.lr)
-        sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
-        # sch = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     opt, self.config.t_max, self.config.lr_min
-        # )
-        return [opt], [sch]
+        opt = torch.optim.AdamW(self.parameters(), lr=self.config.lr)
+        return opt
+        # sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
+        # # sch = torch.optim.lr_scheduler.CosineAnnealingLR(
+        # #     opt, self.config.t_max, self.config.lr_min
+        # # )
+        # return [opt], [sch]
 
     def forward(self, x, is_train):
+        is_train = is_train if not self.training_ddpm else False
+
         b = x.size(0)
-        ze = self.encoder(x)
+        c_logits = self.cls_head(x)
+        param_q = self.log_param_q_cls.exp()
+        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        c_logits = c_logits * precision_q
+        if is_train:
+            c_probs = gumbel_softmax_sample(c_logits, self.temperature_cls)
+        else:
+            c_probs = c_logits.softmax(-1)
+
+        ze = self.encoder(x, c_probs)
 
         ze = ze.permute(0, 2, 3, 1).contiguous()
         ze = ze.view(b, -1, self.latent_dim)
 
-        c_logits = self.cls_head(ze)
-
-        zq, precision_q, logits = self.quantizer(ze, is_train)
+        zq, precision_q, logits = self.quantizer(
+            ze, self.log_param_q, self.temperature, is_train
+        )
 
         h, w = self.latent_size
         ze = ze.view(b, h, w, self.latent_dim)
@@ -173,9 +228,9 @@ class CSQVAE(LightningModule):
         temp_cur = self.calc_temperature(
             self.temp_init_cls, self.temp_decay_cls, self.temp_min_cls
         )
-        self.cls_head.temperature = temp_cur
+        self.temperature_cls = temp_cur
         temp_cur = self.calc_temperature(self.temp_init, self.temp_decay, self.temp_min)
-        self.quantizer.temperature = temp_cur
+        self.temperature = temp_cur
 
         # forward
         recon_x, ze, zq, precision_q, logits, c_logits = self(x, True)
@@ -190,19 +245,24 @@ class CSQVAE(LightningModule):
         lc_real = self.loss_c_real(c_logits, labels)
 
         # generative loss
-        c_probs = gumbel_softmax_sample(c_logits, self.cls_head.temperature)
-        if self.config.gen_model == "pixelcnn":
-            indices = logits.argmax(-1)
-            indices = indices.view(b, self.latent_size[0], self.latent_size[1])
-            logits_prior = self.pixelcnn(indices, c_probs)
-            logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
-            lg = self.loss_pixelcnn(logits, logits_prior)
-        elif self.config.gen_model == "diffusion":
-            ze = ze.view(b, self.latent_dim, -1).permute(0, 2, 1)
-            predicted_noise, noise = self.diffusion.train_step(ze, c_probs)
-            lg = self.loss_diffusion(predicted_noise, noise)
+        if self.training_ddpm:
+            c_probs = c_logits.softmax(-1)
+            if self.config.gen_model == "pixelcnn":
+                indices = logits.argmax(-1)
+                indices = indices.view(b, self.latent_size[0], self.latent_size[1])
+                logits_prior = self.pixelcnn(indices, c_probs)
+                logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
+                lg = self.loss_pixelcnn(logits, logits_prior)
+            elif self.config.gen_model == "diffusion":
+                ze = ze.view(b, self.latent_dim, -1).permute(0, 2, 1)
+                predicted_noise, noise = self.diffusion.train_step(ze, c_probs)
+                # zq = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
+                # predicted_noise, noise = self.diffusion.train_step(zq.detach(), c_probs.detach())
+                lg = self.loss_diffusion(predicted_noise, noise)
+            else:
+                raise NotImplementedError
         else:
-            raise NotImplementedError
+            lg = torch.tensor([0.0]).to(self.device)
 
         loss_total = (
             lrc_x * self.config.lmd_lrc
@@ -217,8 +277,8 @@ class CSQVAE(LightningModule):
             x=lrc_x.item(),
             kl_discrete=kl_discrete.item(),
             kl_continuous=kl_continuous.item(),
-            log_param_q=self.quantizer.log_param_q.item(),
-            log_param_q_cls=self.cls_head.log_param_q_cls.item(),
+            log_param_q=self.log_param_q.item(),
+            log_param_q_cls=self.log_param_q_cls.item(),
             c_elbo=lc_elbo.item(),
             c_real=lc_real.item(),
             g=lg.item(),
@@ -267,7 +327,9 @@ class CSQVAE(LightningModule):
             zq = self.quantizer.sample_zq_from_indices(indices)
         elif self.config.gen_model == "diffusion":
             z = self.diffusion.sample(c_probs)
-            zq, precision_q, logits = self.quantizer(z, False)
+            zq, precision_q, logits = self.quantizer(
+                z, self.log_param_q, self.temperature, False
+            )
         else:
             raise NotImplementedError
 
@@ -281,6 +343,7 @@ class CSQVAE(LightningModule):
         for i in range(nsamples):
             data = {
                 "gen_x": generated_x[i].detach().cpu().numpy(),
+                "z": z[i].detach().cpu().numpy(),
                 "zq": zq[i].detach().cpu().numpy(),
                 "gt": c_probs[i].argmax(dim=-1).cpu(),
             }

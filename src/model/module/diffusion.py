@@ -24,7 +24,7 @@ class DiffusionModel(nn.Module):
         )
 
         self.emb_c = MLP(config.n_clusters, out_dim=config.latent_dim)
-        self.layer = nn.ModuleList(
+        self.blocks = nn.ModuleList(
             [
                 DiTBlock(config.latent_dim, config.nheads)
                 for _ in range(config.n_ditblocks)
@@ -47,8 +47,8 @@ class DiffusionModel(nn.Module):
         c = self.emb_c(c)
         c = t + c
 
-        for layer in self.layer:
-            x = layer(x, c)
+        for block in self.blocks:
+            x = block(x, c)
 
         return x
 
@@ -86,8 +86,11 @@ class DiffusionModel(nn.Module):
                 noise = torch.randn_like(z)
             else:
                 noise = torch.zeros_like(z)
-            z = 1 / torch.sqrt(alpha) * (
-                z - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise
-            ) + torch.sqrt(beta) * noise.to(c.device)
+            z = (
+                1
+                / torch.sqrt(alpha)
+                * (z - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise)
+                + torch.sqrt(beta) * noise
+            )
 
         return z
