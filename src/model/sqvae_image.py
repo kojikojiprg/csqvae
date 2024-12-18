@@ -51,7 +51,7 @@ class CSQVAE(LightningModule):
         self.quantizer = None
         self.pixelcnn = None
         self.diffusion = None
-        self.dim_x = config.dim_x
+        self.x_dim = config.x_dim
         self.flg_arelbo = True
 
     def configure_model(self):
@@ -127,9 +127,9 @@ class CSQVAE(LightningModule):
         if self.flg_arelbo:
             # "Preventing Posterior Collapse Induced by Oversmoothing in Gaussian VAE"
             # https://arxiv.org/abs/2102.08663
-            loss_x = self.dim_x * torch.log(mse) / 2
+            loss_x = self.x_dim * torch.log(mse) / 2
         else:
-            loss_x = mse / (2 * self.logvar_x.exp()) + self.dim_x * self.logvar_x / 2
+            loss_x = mse / (2 * self.logvar_x.exp()) + self.x_dim * self.logvar_x / 2
 
         return loss_x
 
