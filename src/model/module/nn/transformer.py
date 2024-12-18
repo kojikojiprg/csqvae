@@ -1,6 +1,6 @@
 import torch
-import torch.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .feedforward import MLP
 
@@ -25,20 +25,19 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
+        b, n, dim = x.shape
         qkv = (
             self.qkv(x)
-            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .reshape(b, n, 3, self.num_heads, self.head_dim)
             .permute(2, 0, 3, 1, 4)
         )
         q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
 
         x = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop.p if self.training else 0.0
         )
 
-        x = x.transpose(1, 2).reshape(B, N, C)
+        x = x.transpose(1, 2).reshape(b, n, dim)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -61,13 +60,10 @@ class LayerScale(nn.Module):
 
 class TransformerEncoderBlock(nn.Module):
     def __init__(self, dim, nheads, dropout):
+        super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.attn = Attention(
-            dim,
-            nheads=nheads,
-            qkv_bias=True,
-            attn_dropout=dropout,
-            proj_dropout=dropout,
+            dim, nheads=nheads, attn_dropout=dropout, proj_dropout=dropout
         )
         self.ls1 = LayerScale(dim)
         self.drop_path1 = nn.Dropout(dropout)

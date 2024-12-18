@@ -13,7 +13,7 @@ temp_min: 0.001
 param_q_init: 4
 book_size: 128
 hidden_ndim: 1024
-latent_ndim: 16
+latent_dim: 16
 nheads: 1
 nlayers: 3
 dropout: 0.1

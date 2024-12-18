@@ -43,7 +43,6 @@ class CSQVAE(LightningModule):
         self.book_size = config.book_size
         self.latent_dim = config.latent_dim
         self.latent_size = config.latent_size
-        self.bs = config.batch_size
 
         self.encoder = None
         self.decoder = None
@@ -88,31 +87,25 @@ class CSQVAE(LightningModule):
         return [opt], [sch]
 
     def forward(self, x, is_train):
+        b = x.size(0)
         ze = self.encoder(x)
 
         ze = ze.permute(0, 2, 3, 1).contiguous()
-        ze = ze.view(self.bs, -1, self.latent_dim)
+        ze = ze.view(b, -1, self.latent_dim)
 
         c_logits = self.cls_head(ze)
 
         zq, precision_q, logits = self.quantizer(ze, is_train)
 
         h, w = self.latent_size
-        ze = ze.view(self.bs, h, w, self.latent_dim)
+        ze = ze.view(b, h, w, self.latent_dim)
         ze = ze.permute(0, 3, 1, 2)
-        zq = zq.view(self.bs, h, w, self.latent_dim)
+        zq = zq.view(b, h, w, self.latent_dim)
         zq = zq.permute(0, 3, 1, 2)
 
         recon_x = self.decoder(zq)
 
-        return (
-            recon_x,
-            ze,
-            zq,
-            precision_q,
-            logits,
-            c_logits,
-        )
+        return recon_x, ze, zq, precision_q, logits, c_logits
 
     def calc_temperature(self, temp_init, temp_decay, temp_min):
         return np.max(
@@ -174,6 +167,7 @@ class CSQVAE(LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, labels = batch
+        b = x.size(0)
 
         # update temperature of gumbel softmax
         temp_cur = self.calc_temperature(
@@ -184,15 +178,7 @@ class CSQVAE(LightningModule):
         self.quantizer.temperature = temp_cur
 
         # forward
-        (
-            recon_x,
-            ze,
-            zq,
-            precision_q,
-            logits,
-            logits_prior,
-            c_logits,
-        ) = self(x, True)
+        recon_x, ze, zq, precision_q, logits, c_logits = self(x, True)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
@@ -207,13 +193,12 @@ class CSQVAE(LightningModule):
         c_probs = gumbel_softmax_sample(c_logits, self.cls_head.temperature)
         if self.config.gen_model == "pixelcnn":
             indices = logits.argmax(-1)
-            indices = indices.view(self.bs, self.latent_size[0], self.latent_size[1])
+            indices = indices.view(b, self.latent_size[0], self.latent_size[1])
             logits_prior = self.pixelcnn(indices, c_probs)
-            logits_prior = logits_prior.view(self.bs, self.book_size, -1).permute(
-                0, 2, 1
-            )
+            logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
             lg = self.loss_pixelcnn(logits, logits_prior)
         elif self.config.gen_model == "diffusion":
+            ze = ze.view(b, self.latent_dim, -1).permute(0, 2, 1)
             predicted_noise, noise = self.diffusion.train_step(ze, c_probs)
             lg = self.loss_diffusion(predicted_noise, noise)
         else:
@@ -246,14 +231,8 @@ class CSQVAE(LightningModule):
     def predict_step(self, batch):
         x, labels = batch
 
-        (
-            recon_x,
-            ze,
-            zq,
-            precision_q,
-            logits,
-            c_logits,
-        ) = self(x, False)
+        recon_x, ze, zq, precision_q, logits, c_logits = self(x, False)
+
         x = x.permute(0, 2, 3, 1)
         recon_x = recon_x.permute(0, 2, 3, 1)
         ze = ze.permute(0, 2, 3, 1)

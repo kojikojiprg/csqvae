@@ -1,6 +1,6 @@
 # dataset
 name: "cifar10"
-dim_x: 3072  # 3 * 32 * 32
+x_dim: 3072  # 3 * 32 * 32
 shape: [3, 32, 32]
 
 # clustering
@@ -19,28 +19,37 @@ temp_min: 0.0000000001
 
 # model
 n_resblocks: 6
-latent_ndim: 64
+latent_dim: 64
 latent_size: [8, 8]
 nlayers: 6
 nheads: 4
 dropout: 0.1
-n_cnnblocks_pixelcnn: 12
 
-# optim
+# gen_model: "pixelcnn"
+# n_cnnblocks_pixelcnn: 12
+
+gen_model: "diffusion"
+noise_steps: 1000
+beta_start: 0.0001
+beta_end: 0.02
+n_ditblocks: 12
+
+
+# loss
 lmd_lrc: 1
 lmd_klc: 1
-lmd_kld: 0.001
+lmd_kld: 1
 lmd_c_elbo: 1
 lmd_c_real: 10
+lmd_lg: 1
 
+# optim
+n_labeled_samples: 50000
+epochs: 200
 lr: 0.001
 lr_lmd: 0.99
 # t_max: 40
 # lr_min: 0.00001
-
-# training
-n_labeled_samples: 50000
-epochs: 200
 batch_size: 256
 accumulate_grad_batches: 1
 num_workers: 4

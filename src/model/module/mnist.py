@@ -25,7 +25,7 @@ class ClassificationHead(nn.Module):
             ]
         )
 
-        self.mlp = MLP(config.latent_dim, config.n_clusters)
+        self.mlp = MLP(config.latent_dim, out_dim=config.n_clusters)
 
         self.temperature = None
         log_param_q_cls = np.log(config.param_q_init_cls)
@@ -40,7 +40,7 @@ class ClassificationHead(nn.Module):
         z = self.pe.rotate_queries_or_keys(z, seq_dim=1)
 
         for encoder in self.tre:
-            z, attn_w = encoder(z)
+            z = encoder(z)
 
         logits = self.mlp(z[:, 0, :])
 

@@ -9,22 +9,20 @@ def modulate(x, shift, scale):
 
 
 class DiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_dim, nheads, mlp_ratio=4.0):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(
-            hidden_size, nheads=num_heads, qkv_bias=True, **block_kwargs
-        )
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.attn = Attention(hidden_dim, nheads)
+        self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        mlp_hidden_dim = int(hidden_dim * mlp_ratio)
         self.mlp = MLP(
-            hidden_size,
+            hidden_dim,
             mlp_hidden_dim,
             act_layer=nn.GELU(approximate="tanh"),
             dropout=0,
         )
         self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+            nn.SiLU(), nn.Linear(hidden_dim, 6 * hidden_dim, bias=True)
         )
 
     def forward(self, x, c):
