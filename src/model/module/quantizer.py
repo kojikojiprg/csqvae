@@ -32,11 +32,11 @@ class GaussianVectorQuantizer(nn.Module):
         super().__init__()
         self.n_clusters = config.n_clusters
         self.book_size = config.book_size
-        self.ndim = config.latent_ndim
+        self.dim = config.latent_dim
         size = config.latent_size
         self.npts = size[0] * size[1]
 
-        self.book = nn.Parameter(torch.randn(self.book_size, config.latent_ndim))
+        self.book = nn.Parameter(torch.randn(self.book_size, config.latent_dim))
 
         self.temperature = None
         log_param_q = np.log(config.param_q_init)
@@ -47,7 +47,7 @@ class GaussianVectorQuantizer(nn.Module):
 
         param_q = self.log_param_q.exp()
         precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
-        logits = -calc_distance(ze.view(-1, self.ndim), self.book) * precision_q
+        logits = -calc_distance(ze.view(-1, self.dim), self.book) * precision_q
 
         if is_train:
             encodings = gumbel_softmax_sample(logits, self.temperature)
@@ -59,7 +59,7 @@ class GaussianVectorQuantizer(nn.Module):
             zq = torch.mm(encodings, self.book)
 
         logits = logits.view(b, -1, self.book_size)
-        zq = zq.view(b, -1, self.ndim)
+        zq = zq.view(b, -1, self.dim)
 
         return zq, precision_q, logits
 
@@ -71,6 +71,6 @@ class GaussianVectorQuantizer(nn.Module):
         encodings.scatter_(1, indices, 1)
         zq = torch.mm(encodings, self.book)
 
-        zq = zq.view(b, -1, self.ndim)
+        zq = zq.view(b, -1, self.dim)
 
         return zq

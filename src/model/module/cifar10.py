@@ -5,27 +5,27 @@ import torch
 import torch.nn as nn
 from rotary_embedding_torch import RotaryEmbedding
 
-from .nn.resblock import ResidualBlock
 from .nn.feedforward import MLP
+from .nn.resblock import ResidualBlock
 from .nn.transformer import TransformerEncoderBlock
 
 
 class ClassificationHead(nn.Module):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
-        self.cls_token = nn.Parameter(torch.randn(1, 1, config.latent_ndim))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, config.latent_dim))
 
-        self.pe = RotaryEmbedding(config.latent_ndim, learned_freq=False)
+        self.pe = RotaryEmbedding(config.latent_dim, learned_freq=False)
         self.tre = nn.ModuleList(
             [
                 TransformerEncoderBlock(
-                    config.latent_ndim, config.nheads, config.dropout
+                    config.latent_dim, config.nheads, config.dropout
                 )
                 for _ in range(config.nlayers)
             ]
         )
 
-        self.mlp = MLP(config.latent_ndim, config.n_clusters)
+        self.mlp = MLP(config.latent_dim, config.n_clusters)
 
         self.temperature = None
         log_param_q_cls = np.log(config.param_q_init_cls)
@@ -54,22 +54,22 @@ class Encoder(nn.Module):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
 
-        latent_ndim = config.latent_ndim
-        self.latent_ndim = config.latent_ndim
+        latent_dim = config.latent_dim
+        self.latent_dim = config.latent_dim
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, latent_ndim // 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(latent_ndim // 2),
+            nn.Conv2d(3, latent_dim // 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(latent_dim // 2),
             nn.ReLU(),
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(latent_ndim // 2, latent_ndim, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(latent_ndim),
+            nn.Conv2d(latent_dim // 2, latent_dim, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(latent_dim),
             nn.ReLU(),
         )
-        self.conv3 = nn.Conv2d(latent_ndim, latent_ndim, 3, 1, 1, bias=False)
+        self.conv3 = nn.Conv2d(latent_dim, latent_dim, 3, 1, 1, bias=False)
 
         self.res_blocks = nn.ModuleList(
-            [ResidualBlock(latent_ndim) for _ in range(config.n_resblocks)]
+            [ResidualBlock(latent_dim) for _ in range(config.n_resblocks)]
         )
 
     def forward(self, x):
@@ -87,22 +87,22 @@ class Decoder(nn.Module):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
 
-        latent_ndim = config.latent_ndim
+        latent_dim = config.latent_dim
         self.res_blocks = nn.ModuleList(
-            [ResidualBlock(latent_ndim) for _ in range(config.n_resblocks)]
+            [ResidualBlock(latent_dim) for _ in range(config.n_resblocks)]
         )
 
         self.conv1 = nn.Sequential(
-            nn.ConvTranspose2d(latent_ndim, latent_ndim, 3, 1, 1, bias=False),
-            nn.BatchNorm2d(latent_ndim),
+            nn.ConvTranspose2d(latent_dim, latent_dim, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(latent_dim),
             nn.ReLU(),
         )
         self.conv2 = nn.Sequential(
-            nn.ConvTranspose2d(latent_ndim, latent_ndim // 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(latent_ndim // 2),
+            nn.ConvTranspose2d(latent_dim, latent_dim // 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(latent_dim // 2),
             nn.ReLU(),
         )
-        self.conv3 = nn.ConvTranspose2d(latent_ndim // 2, 3, 4, 2, 1, bias=False)
+        self.conv3 = nn.ConvTranspose2d(latent_dim // 2, 3, 4, 2, 1, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):

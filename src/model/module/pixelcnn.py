@@ -30,9 +30,9 @@ class PixelCNN(nn.Module):
         super().__init__()
         self.book_size = config.book_size
         self.latent_size = config.latent_size
-        nch = config.latent_ndim
+        nch = config.latent_dim
 
-        self.in_emb = nn.Embedding(config.book_size, config.latent_ndim)
+        self.in_emb = nn.Embedding(config.book_size, config.latent_dim)
         self.layers = nn.ModuleList()
         conv_block = nn.Sequential(
             MaskedConv2d(

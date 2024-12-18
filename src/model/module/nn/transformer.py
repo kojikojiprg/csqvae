@@ -1,116 +1,83 @@
 import torch
+import torch.functional as F
 import torch.nn as nn
 
-from .feedforward import SwiGLU
+from .feedforward import MLP
+
+
+class Attention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        nheads: int = 8,
+        attn_dropout: float = 0.0,
+        proj_dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        assert dim % nheads == 0, "dim should be divisible by num_heads"
+        self.num_heads = nheads
+        self.head_dim = dim // nheads
+        self.scale = self.head_dim**-0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=True)
+        self.attn_drop = nn.Dropout(attn_dropout)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv.unbind(0)
+        q, k = self.q_norm(q), self.k_norm(k)
+
+        x = F.scaled_dot_product_attention(
+            q, k, v, dropout_p=self.attn_drop.p if self.training else 0.0
+        )
+
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class LayerScale(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        init_values: float = 1e-5,
+        inplace: bool = False,
+    ) -> None:
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
 
 
 class TransformerEncoderBlock(nn.Module):
-    def __init__(self, ndim, nheads, dropout):
-        super().__init__()
-        self.nheads = nheads
-        self.norm1 = nn.LayerNorm(ndim)
-        self.attn = nn.MultiheadAttention(
-            ndim, nheads, dropout=dropout, batch_first=True
+    def __init__(self, dim, nheads, dropout):
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = Attention(
+            dim,
+            nheads=nheads,
+            qkv_bias=True,
+            attn_dropout=dropout,
+            proj_dropout=dropout,
         )
+        self.ls1 = LayerScale(dim)
+        self.drop_path1 = nn.Dropout(dropout)
 
-        self.norm2 = nn.LayerNorm(ndim)
-        self.ff = SwiGLU(ndim)
-        self.dropout2 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = MLP(dim, dropout=dropout)
+        self.ls2 = LayerScale(dim)
+        self.drop_path2 = nn.Dropout(dropout)
 
-    def forward(self, x, mask=None, mask_type="src", need_weights=False):
-        b, seq_len = x.size()[:2]
-        # x (b * seq_len, npatch, ndim)
-        if mask is not None:
-            if mask_type == "src":
-                mask = create_src_mask(mask, b, seq_len, self.nheads)
-            elif mask_type == "tgt":
-                mask = create_tgt_mask(mask, b, seq_len, self.nheads)
-            else:
-                raise ValueError
-        x = self.norm1(x)
-        x_attn, attn_w = self.attention_block(x, mask, need_weights)
-        x = x + x_attn
-
-        x = self.norm2(x)
-        x = x + self.feed_forward_block(x)
-
-        return x, attn_w
-
-    def attention_block(self, x, mask, need_weights):
-        x, attn_w = self.attn(x, x, x, attn_mask=mask, need_weights=need_weights)
-        return x, attn_w
-
-    def feed_forward_block(self, x):
-        x = self.ff(x)
-        x = self.dropout2(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
-
-
-class TransformerDecoderBlock(nn.Module):
-    def __init__(self, ndim, nheads, dropout):
-        super().__init__()
-        self.nheads = nheads
-        self.norm1 = nn.LayerNorm(ndim)
-        self.attn1 = nn.MultiheadAttention(
-            ndim, nheads, dropout=dropout, batch_first=True
-        )
-
-        self.norm2 = nn.LayerNorm(ndim)
-        self.attn2 = nn.MultiheadAttention(
-            ndim, nheads, dropout=dropout, batch_first=True
-        )
-
-        self.norm3 = nn.LayerNorm(ndim)
-        self.ff = SwiGLU(ndim)
-        self.dropout3 = nn.Dropout(dropout)
-
-    def forward(self, x, z, mask=None):
-        b, seq_len = x.size()[:2]
-        # x (b * seq_len, npatch, ndim)
-        tgt_mask = create_tgt_mask(mask, b, seq_len, self.nheads, x.device)
-        x = self.norm1(x)
-        x = x + self.attention_block1(x, tgt_mask)
-
-        if mask is not None:
-            src_mask = create_src_mask(mask, b, seq_len, self.nheads)
-        else:
-            src_mask = None
-        x = self.norm2(x)
-        x = x + self.attention_block2(x, z, src_mask)
-
-        x = self.norm3(x)
-        x = x + self.feed_forward_block(x)
-
-        return x
-
-    def attention_block1(self, x, mask):
-        x = self.attn1(x, x, x, attn_mask=mask, need_weights=False)[0]
-        return x
-
-    def attention_block2(self, x, z, mask):
-        x = self.attn2(x, z, z, attn_mask=mask, need_weights=False)[0]
-        return x
-
-    def feed_forward_block(self, x):
-        x = self.ff(x)
-        x = self.dropout3(x)
-        return x
-
-
-def create_src_mask(mask, b, seq_len, nheads):
-    mask = (
-        mask.view(b, 1, seq_len)
-        .repeat((1, nheads, seq_len))
-        .view(b * nheads, seq_len, seq_len)
-    ).detach()
-    return mask
-
-
-def create_tgt_mask(mask, b, seq_len, nheads, device=None):
-    if mask is not None:
-        mask = create_src_mask(mask, b, seq_len, nheads)
-        subsequent_mask = ~torch.tril(torch.full((seq_len, seq_len), True)).to(mask.device)
-        mask = mask + subsequent_mask
-    else:
-        mask = ~torch.tril(torch.full((seq_len, seq_len), True)).to(device)
-    return mask
