@@ -20,30 +20,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset", choices=["mnist", "cifar10"], type=str)
     parser.add_argument("-g", "--gpu_ids", type=int, nargs="*", default=None)
-    parser.add_argument("-trd", "--training_ddpm", action="store_true", default=False)
     parser.add_argument("-ckpt", "--checkpoint", required=False, type=str, default=None)
     args = parser.parse_args()
     dataset_name = args.dataset
     gpu_ids = args.gpu_ids
-    training_ddpm = args.training_ddpm
     pre_checkpoint_path = args.checkpoint
-    if training_ddpm:
-        assert pre_checkpoint_path is not None
 
     # load config
-    config_name = dataset_name + "_ddpm" if training_ddpm else dataset_name
+    config_name = dataset_name
     config_path = f"configs/{config_name}.yaml"
     config = yaml_handler.load(config_path)
 
     # create checkpoint directory of this version
     checkpoint_dir = f"models/{dataset_name}"
     ckpt_dirs = glob(os.path.join(checkpoint_dir, "*/"))
-    if training_ddpm:
-        version_prefix = "ddpm_"
-        ckpt_dirs = [d for d in ckpt_dirs if version_prefix in d]
-    else:
-        version_prefix = ""
-        ckpt_dirs = [d for d in ckpt_dirs if d.isdecimal()]
+    version_prefix = ""
+    ckpt_dirs = [d for d in ckpt_dirs if os.path.basename(d[:-1]).isdecimal()]
     if len(ckpt_dirs) > 0:
         max_v_num = 0
         for d in ckpt_dirs:
@@ -91,12 +83,12 @@ if __name__ == "__main__":
     )
 
     # create model
-    model = CSQVAE(config, training_ddpm)
-    if training_ddpm:
-        model.load_from_checkpoint(pre_checkpoint_path)
-        model.global_step = 0
-    ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
+    if pre_checkpoint_path is not None:
+        model = CSQVAE.load_from_checkpoint(pre_checkpoint_path, config=config)
+    else:
+        model = CSQVAE(config)
 
+    ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
     logger = TensorBoardLogger("logs", name=dataset_name, version=version)
     trainer = Trainer(
         accelerator="cuda",
