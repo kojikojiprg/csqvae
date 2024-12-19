@@ -36,3 +36,21 @@ class DiTBlock(nn.Module):
             modulate(self.norm2(x), shift_mlp, scale_mlp)
         )
         return x
+
+
+class FinalLayer(nn.Module):
+    def __init__(self, hidden_dim, out_dim):
+        super().__init__()
+        self.norm_final = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.linear = nn.Linear(
+            hidden_dim, out_dim, bias=True
+        )
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), nn.Linear(hidden_dim, 2 * hidden_dim, bias=True)
+        )
+
+    def forward(self, x, c):
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
+        x = modulate(self.norm_final(x), shift, scale)
+        x = self.linear(x)
+        return x

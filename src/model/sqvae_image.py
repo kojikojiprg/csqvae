@@ -34,10 +34,9 @@ def weights_init(m):
 
 
 class CSQVAE(LightningModule):
-    def __init__(self, config: SimpleNamespace, training_ddpm: bool = False):
+    def __init__(self, config: SimpleNamespace):
         super().__init__()
         self.config = config
-        self.training_ddpm = training_ddpm
 
         self.dataset_name = config.name
         self.n_clusters = config.n_clusters
@@ -105,34 +104,28 @@ class CSQVAE(LightningModule):
 
         self.init_weights()
 
-        if self.training_ddpm:
-            self.encoder.requires_grad_(False)
-            self.decoder.requires_grad_(False)
-            self.cls_head.requires_grad_(False)
-            self.quantizer.requires_grad_(False)
-        else:
-            self.diffusion.requires_grad_(False)
-
     def init_weights(self):
         self.apply(weights_init)
 
         # Zero-out adaLN modulation layers in DiT blocks:
+        nn.init.constant_(self.diffusion.emb_c.weight, 0)
+        nn.init.constant_(self.diffusion.emb_c.bias, 0)
         for block in self.diffusion.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.diffusion.fin.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.diffusion.fin.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.diffusion.fin.linear.weight, 0)
+        nn.init.constant_(self.diffusion.fin.linear.bias, 0)
 
     def configure_optimizers(self):
         opt = torch.optim.AdamW(self.parameters(), lr=self.config.lr)
-        return opt
-        # sch = torch.optim.lr_scheduler.ExponentialLR(opt, self.config.lr_lmd)
-        # # sch = torch.optim.lr_scheduler.CosineAnnealingLR(
-        # #     opt, self.config.t_max, self.config.lr_min
-        # # )
-        # return [opt], [sch]
+        sch = torch.optim.lr_scheduler.MultiStepLR(
+            opt, [self.config.warmup_epochs], gamma=self.config.lr_gamma
+        )
+        return [opt], [sch]
 
     def forward(self, x, is_train):
-        is_train = is_train if not self.training_ddpm else False
-
         b = x.size(0)
         c_logits = self.cls_head(x)
         param_q = self.log_param_q_cls.exp()
@@ -245,33 +238,59 @@ class CSQVAE(LightningModule):
         lc_real = self.loss_c_real(c_logits, labels)
 
         # generative loss
-        if self.training_ddpm:
-            c_probs = c_logits.softmax(-1)
-            if self.config.gen_model == "pixelcnn":
-                indices = logits.argmax(-1)
-                indices = indices.view(b, self.latent_size[0], self.latent_size[1])
-                logits_prior = self.pixelcnn(indices, c_probs)
-                logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
-                lg = self.loss_pixelcnn(logits, logits_prior)
-            elif self.config.gen_model == "diffusion":
-                ze = ze.view(b, self.latent_dim, -1).permute(0, 2, 1)
-                predicted_noise, noise = self.diffusion.train_step(ze, c_probs)
-                # zq = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-                # predicted_noise, noise = self.diffusion.train_step(zq.detach(), c_probs.detach())
-                lg = self.loss_diffusion(predicted_noise, noise)
-            else:
-                raise NotImplementedError
-        else:
-            lg = torch.tensor([0.0]).to(self.device)
+        c_probs = c_logits.softmax(-1)
+        if self.config.gen_model == "pixelcnn":
+            indices = logits.argmax(-1)
+            indices = indices.view(b, self.latent_size[0], self.latent_size[1])
+            logits_prior = self.pixelcnn(indices, c_probs)
+            logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
+            lgd = self.loss_pixelcnn(logits, logits_prior)
+        elif self.config.gen_model == "diffusion":
+            ze = ze.view(b, self.latent_dim, -1).permute(0, 2, 1)
+            pred_noise, noise, pred_noise_1, noise_1, pred_z = (
+                self.diffusion.train_step(ze.detach(), c_probs)
+            )
+            lgd = self.loss_diffusion(pred_noise, noise)
+            lgz = torch.tensor([0.0]).to(self.device)
 
-        loss_total = (
-            lrc_x * self.config.lmd_lrc
-            + kl_continuous * self.config.lmd_klc
-            + kl_discrete * self.config.lmd_kld
-            + lc_elbo * self.config.lmd_c_elbo
-            + lc_real * self.config.lmd_c_real
-            + lg * self.config.lmd_lg
-        )
+            # lgz = F.mse_loss(pred_z, ze.detach())
+            # lgz = self.loss_diffusion(pred_noise_1, noise_1)
+
+            # pred_zq, precision_q, logits_prior = self.quantizer(
+            #     pred_z, self.log_param_q, self.temperature, True
+            # )
+            # lgz = F.mse_loss(
+            #     pred_zq, zq.detach().view(b, self.latent_dim, -1).permute(0, 2, 1)
+            # )
+            # lgz = self.loss_pixelcnn(logits, logits_prior)
+            # h, w = self.latent_size
+            # pred_zq = pred_zq.view(b, h, w, self.latent_dim).permute(0, 3, 1, 2)
+            # pred_x = self.decoder(pred_zq)
+            # lgz = F.mse_loss(pred_x, x)
+
+        else:
+            raise NotImplementedError
+
+        if self.current_epoch < self.config.warmup_epochs:
+            loss_total = (
+                lrc_x * self.config.lmd_lrc
+                + kl_continuous * self.config.lmd_klc
+                + kl_discrete * self.config.lmd_kld
+                + lc_elbo * self.config.lmd_c_elbo
+                + lc_real * self.config.lmd_c_real
+                + lgd * 0.0000000001
+                + lgz * 0.0000000001
+            )
+        else:
+            loss_total = (
+                lrc_x * self.config.lmd_lrc
+                + kl_continuous * self.config.lmd_klc
+                + kl_discrete * self.config.lmd_kld
+                + lc_elbo * self.config.lmd_c_elbo
+                + lc_real * self.config.lmd_c_real
+                + lgd * self.config.lmd_lgd
+                + lgz * self.config.lmd_lgz
+            )
 
         loss_dict = dict(
             x=lrc_x.item(),
@@ -281,7 +300,8 @@ class CSQVAE(LightningModule):
             log_param_q_cls=self.log_param_q_cls.item(),
             c_elbo=lc_elbo.item(),
             c_real=lc_real.item(),
-            g=lg.item(),
+            gd=lgd.item(),
+            gz=lgz.item(),
             total=loss_total.item(),
         )
         self.log_dict(loss_dict, prog_bar=True, logger=True)
@@ -317,6 +337,7 @@ class CSQVAE(LightningModule):
 
         return results
 
+    @torch.no_grad()
     def sample(self, c_probs: torch.Tensor):
         c_probs = c_probs.to(self.device, torch.float32)
         nsamples = c_probs.size(0)
@@ -335,8 +356,8 @@ class CSQVAE(LightningModule):
 
         # generate samples
         h, w = self.latent_size
-        zq = zq.view(nsamples, h, w, self.latent_dim)
-        generated_x = self.decoder(zq.permute(0, 3, 1, 2))
+        zq = zq.view(nsamples, h, w, self.latent_dim).permute(0, 3, 1, 2)
+        generated_x = self.decoder(zq)
         generated_x = generated_x.permute(0, 2, 3, 1)
 
         results = []
