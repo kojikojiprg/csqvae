@@ -251,18 +251,18 @@ class CSQVAE(LightningModule):
                 self.diffusion.train_step(ze.detach(), c_probs)
             )
             lgd = self.loss_diffusion(pred_noise, noise)
-            lgz = torch.tensor([0.0]).to(self.device)
+            # lgz = torch.tensor([0.0]).to(self.device)
 
             # lgz = F.mse_loss(pred_z, ze.detach())
             # lgz = self.loss_diffusion(pred_noise_1, noise_1)
 
-            # pred_zq, precision_q, logits_prior = self.quantizer(
-            #     pred_z, self.log_param_q, self.temperature, True
-            # )
+            pred_zq, precision_q, logits_prior = self.quantizer(
+                pred_z, self.log_param_q, self.temperature, True
+            )
             # lgz = F.mse_loss(
             #     pred_zq, zq.detach().view(b, self.latent_dim, -1).permute(0, 2, 1)
             # )
-            # lgz = self.loss_pixelcnn(logits, logits_prior)
+            lgz = self.loss_pixelcnn(logits, logits_prior)
             # h, w = self.latent_size
             # pred_zq = pred_zq.view(b, h, w, self.latent_dim).permute(0, 3, 1, 2)
             # pred_x = self.decoder(pred_zq)

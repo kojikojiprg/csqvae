@@ -70,19 +70,19 @@ class DiffusionModel(nn.Module):
         # c (b, n_clusters)
         t = self.sample_timesteps(z.size(0)).to(z.device)
         zt, noise = self.sample_noise(z, t)
-        predicted_noise = self(zt, t, c)
+        pred_noise = self(zt, t, c)
 
         # samplig from z1
         t1 = torch.ones_like(t)
         z1, noise_1 = self.sample_noise(z, t1)
-        predicted_noise_1 = self(z1, t1, c)
+        pred_noise_1 = self(z1, t1, c)
         beta = self.beta[t1][:, None, None]
         alpha = self.alpha[t1][:, None, None]
         alpha_hat = self.alpha_hat[t1][:, None, None]
-        predicted_z = (
-            z1 - (beta / (torch.sqrt(1 - alpha_hat))) * predicted_noise_1
+        pred_z = (
+            z1 - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise_1
         ) / torch.sqrt(alpha)
-        return predicted_noise, noise, predicted_noise_1, noise_1, predicted_z
+        return pred_noise, noise, pred_noise_1, noise_1, pred_z
 
     @torch.no_grad()
     def sample(self, c):
