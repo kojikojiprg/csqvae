@@ -9,7 +9,7 @@ from timm.models.vision_transformer import VisionTransformer
 
 from src.model.module.cifar10 import Decoder as Decoder_CIFAR10
 from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
-from src.model.module.diffusion import DiffusionModel
+from src.model.module.diffusion import DiffusionModule
 from src.model.module.mnist import Decoder as Decoder_MNIST
 from src.model.module.mnist import Encoder as Encoder_MNIST
 from src.model.module.pixelcnn import PixelCNN
@@ -95,7 +95,7 @@ class CSQVAE(LightningModule):
         if self.config.gen_model == "pixelcnn":
             self.pixelcnn = PixelCNN(self.config)
         elif self.config.gen_model == "diffusion":
-            self.diffusion = DiffusionModel(self.config)
+            self.diffusion = DiffusionModule(self.config)
         else:
             raise NotImplementedError
 
@@ -108,15 +108,15 @@ class CSQVAE(LightningModule):
         self.apply(weights_init)
 
         # Zero-out adaLN modulation layers in DiT blocks:
-        nn.init.constant_(self.diffusion.emb_c.weight, 0)
-        nn.init.constant_(self.diffusion.emb_c.bias, 0)
-        for block in self.diffusion.blocks:
+        # nn.init.constant_(self.diffusion.emb_c.weight, 0)
+        # nn.init.constant_(self.diffusion.emb_c.bias, 0)
+        for block in self.diffusion.model.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.diffusion.fin.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.diffusion.fin.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.diffusion.fin.linear.weight, 0)
-        nn.init.constant_(self.diffusion.fin.linear.bias, 0)
+        nn.init.constant_(self.diffusion.model.fin.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.diffusion.model.fin.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.diffusion.model.fin.linear.weight, 0)
+        nn.init.constant_(self.diffusion.model.fin.linear.bias, 0)
 
     def configure_optimizers(self):
         opt = torch.optim.AdamW(self.parameters(), lr=self.config.lr)
@@ -128,32 +128,41 @@ class CSQVAE(LightningModule):
     def forward(self, x, is_train):
         b = x.size(0)
         c_logits = self.cls_head(x)
-        param_q = self.log_param_q_cls.exp()
-        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
-        c_logits = c_logits * precision_q
         if is_train:
-            c_probs = gumbel_softmax_sample(c_logits, self.temperature_cls)
+            param_q = self.log_param_q_cls.exp()
+            precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+            c_logits_scaled = c_logits * precision_q
+            c_probs = gumbel_softmax_sample(c_logits_scaled, self.temperature_cls)
         else:
             c_probs = c_logits.softmax(-1)
 
-        ze = self.encoder(x, c_probs)
+        z = self.encoder(x, c_probs)
 
-        ze = ze.permute(0, 2, 3, 1).contiguous()
-        ze = ze.view(b, -1, self.latent_dim)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
 
-        zq, precision_q, logits = self.quantizer(
-            ze, self.log_param_q, self.temperature, is_train
+        zq, precision_q, logits, mu = self.quantizer(
+            z, c_probs, self.log_param_q, self.temperature, is_train
         )
 
         h, w = self.latent_size
-        ze = ze.view(b, h, w, self.latent_dim)
-        ze = ze.permute(0, 3, 1, 2)
+        z = z.view(b, h, w, self.latent_dim)
+        z = z.permute(0, 3, 1, 2)
         zq = zq.view(b, h, w, self.latent_dim)
         zq = zq.permute(0, 3, 1, 2)
 
         recon_x = self.decoder(zq)
 
-        return recon_x, ze, zq, precision_q, logits, c_logits
+        if is_train:
+            zq_flat = zq.detach().view(b, self.latent_dim, -1).permute(0, 2, 1)
+            pred_noise, noise, zq_prior = self.diffusion.train_step(
+                zq_flat, c_probs.argmax(-1), mu.detach()
+            )
+            zq_prior = zq_prior.view(b, h, w, self.latent_dim)
+            zq_prior = zq_prior.permute(0, 3, 1, 2)
+            return recon_x, z, zq, precision_q, c_logits, pred_noise, noise, zq_prior
+        else:
+            return recon_x, z, zq, logits, c_probs
 
     def calc_temperature(self, temp_init, temp_decay, temp_min):
         return np.max(
@@ -202,7 +211,7 @@ class CSQVAE(LightningModule):
 
         return lc_real
 
-    def loss_pixelcnn(self, logits, logits_prior, eps=1e-10):
+    def loss_kl_logits(self, logits, logits_prior, eps=1e-10):
         q = logits.softmax(dim=-1)
         q_log = logits.log_softmax(dim=-1)
         p_log = logits_prior.log_softmax(dim=-1)
@@ -211,11 +220,10 @@ class CSQVAE(LightningModule):
         return kl
 
     def loss_diffusion(self, predicted_noise, noise):
-        return F.mse_loss(predicted_noise, noise)
+        return F.mse_loss(predicted_noise, noise, reduction="sum") / noise.size(0)
 
     def training_step(self, batch, batch_idx):
         x, labels = batch
-        b = x.size(0)
 
         # update temperature of gumbel softmax
         temp_cur = self.calc_temperature(
@@ -226,82 +234,58 @@ class CSQVAE(LightningModule):
         self.temperature = temp_cur
 
         # forward
-        recon_x, ze, zq, precision_q, logits, c_logits = self(x, True)
+        recon_x, z, zq, precision_q, c_logits, pred_noise, noise, zq_prior = self(
+            x, True
+        )
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
-        kl_continuous = self.loss_kl_continuous(ze, zq, precision_q)
-        kl_discrete = self.loss_kl_discrete(logits)
-
-        # clustering loss
+        kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
+        kl_discrete = self.loss_x(zq, zq_prior)
+        # kl_discrete = self.loss_kl_discrete(logits)
+        ldt = self.loss_diffusion(pred_noise, noise)
         lc_elbo = self.loss_c_elbo(c_logits)
+
+        # clustering loss of labeled data
         lc_real = self.loss_c_real(c_logits, labels)
-
-        # generative loss
-        c_probs = c_logits.softmax(-1)
-        if self.config.gen_model == "pixelcnn":
-            indices = logits.argmax(-1)
-            indices = indices.view(b, self.latent_size[0], self.latent_size[1])
-            logits_prior = self.pixelcnn(indices, c_probs)
-            logits_prior = logits_prior.view(b, self.book_size, -1).permute(0, 2, 1)
-            lgd = self.loss_pixelcnn(logits, logits_prior)
-        elif self.config.gen_model == "diffusion":
-            ze = ze.view(b, self.latent_dim, -1).permute(0, 2, 1)
-            pred_noise, noise, pred_noise_1, noise_1, pred_z = (
-                self.diffusion.train_step(ze.detach(), c_probs)
-            )
-            lgd = self.loss_diffusion(pred_noise, noise)
-            # lgz = torch.tensor([0.0]).to(self.device)
-
-            # lgz = F.mse_loss(pred_z, ze.detach())
-            # lgz = self.loss_diffusion(pred_noise_1, noise_1)
-
-            pred_zq, precision_q, logits_prior = self.quantizer(
-                pred_z, self.log_param_q, self.temperature, True
-            )
-            # lgz = F.mse_loss(
-            #     pred_zq, zq.detach().view(b, self.latent_dim, -1).permute(0, 2, 1)
-            # )
-            lgz = self.loss_pixelcnn(logits, logits_prior)
-            # h, w = self.latent_size
-            # pred_zq = pred_zq.view(b, h, w, self.latent_dim).permute(0, 3, 1, 2)
-            # pred_x = self.decoder(pred_zq)
-            # lgz = F.mse_loss(pred_x, x)
-
-        else:
-            raise NotImplementedError
 
         if self.current_epoch < self.config.warmup_epochs:
             loss_total = (
                 lrc_x * self.config.lmd_lrc
                 + kl_continuous * self.config.lmd_klc
-                + kl_discrete * self.config.lmd_kld
+                + kl_discrete * 0.0000000001
+                + ldt * 0.0000000001
                 + lc_elbo * self.config.lmd_c_elbo
                 + lc_real * self.config.lmd_c_real
-                + lgd * 0.0000000001
-                + lgz * 0.0000000001
+            )
+        elif self.current_epoch >= self.config.freeze_csqvae_epoch:
+            loss_total = (
+                lrc_x * 0
+                + kl_continuous * 1e-10
+                + kl_discrete * self.config.lmd_kld
+                + ldt * self.config.lmd_ldt
+                + lc_elbo * 1e-10
+                + lc_real * 1e-10
             )
         else:
             loss_total = (
                 lrc_x * self.config.lmd_lrc
                 + kl_continuous * self.config.lmd_klc
                 + kl_discrete * self.config.lmd_kld
+                + ldt * self.config.lmd_ldt
                 + lc_elbo * self.config.lmd_c_elbo
                 + lc_real * self.config.lmd_c_real
-                + lgd * self.config.lmd_lgd
-                + lgz * self.config.lmd_lgz
             )
 
         loss_dict = dict(
             x=lrc_x.item(),
-            kl_discrete=kl_discrete.item(),
             kl_continuous=kl_continuous.item(),
+            kl_discrete=kl_discrete.item(),
             log_param_q=self.log_param_q.item(),
             log_param_q_cls=self.log_param_q_cls.item(),
             c_elbo=lc_elbo.item(),
             c_real=lc_real.item(),
-            gd=lgd.item(),
-            gz=lgz.item(),
+            dt=ldt.item(),
             total=loss_total.item(),
         )
         self.log_dict(loss_dict, prog_bar=True, logger=True)
@@ -311,26 +295,25 @@ class CSQVAE(LightningModule):
     def predict_step(self, batch):
         x, labels = batch
 
-        recon_x, ze, zq, precision_q, logits, c_logits = self(x, False)
+        recon_x, z, zq, logits, c_probs = self(x, False)
 
         x = x.permute(0, 2, 3, 1)
         recon_x = recon_x.permute(0, 2, 3, 1)
-        ze = ze.permute(0, 2, 3, 1)
+        z = z.permute(0, 2, 3, 1)
         zq = zq.permute(0, 2, 3, 1)
-        prob = logits.softmax(dim=-1)
-        c_prob = c_logits.softmax(dim=-1)
+        zq_probs = logits.softmax(dim=-1)
 
         results = []
         for i in range(len(x)):
             data = {
                 "x": x[i].detach().cpu().numpy(),
                 "recon_x": recon_x[i].detach().cpu().numpy(),
-                "ze": ze[i].detach().cpu().numpy(),
+                "ze": z[i].detach().cpu().numpy(),
                 "zq": zq[i].detach().cpu().numpy(),
-                "book_prob": prob[i].detach().cpu().numpy(),
-                "book_idx": prob[i].detach().cpu().numpy().argmax(axis=1),
-                "label_prob": c_prob[i].detach().cpu().numpy(),
-                "label": c_prob[i].detach().cpu().numpy().argmax(),
+                "book_prob": zq_probs[i].detach().cpu().numpy(),
+                "book_idx": zq_probs[i].detach().cpu().numpy().argmax(axis=1),
+                "label_prob": c_probs[i].detach().cpu().numpy(),
+                "label": c_probs[i].detach().cpu().numpy().argmax(),
                 "label_gt": labels[i].detach().cpu().numpy().item(),
             }
             results.append(data)
@@ -342,17 +325,10 @@ class CSQVAE(LightningModule):
         c_probs = c_probs.to(self.device, torch.float32)
         nsamples = c_probs.size(0)
 
-        if self.config.gen_model == "pixelcnn":
-            indices = self.pixelcnn.sample_prior(c_probs)
-            indices = indices.view(nsamples, -1)
-            zq = self.quantizer.sample_zq_from_indices(indices)
-        elif self.config.gen_model == "diffusion":
-            z = self.diffusion.sample(c_probs)
-            zq, precision_q, logits = self.quantizer(
-                z, self.log_param_q, self.temperature, False
-            )
-        else:
-            raise NotImplementedError
+        zq = self.diffusion.sample(c_probs, self.quantizer.mu)
+        # zq, precision_q, logits, mu = self.quantizer(
+        #     zq, c_probs, self.log_param_q, self.temperature, False
+        # )
 
         # generate samples
         h, w = self.latent_size
@@ -364,7 +340,7 @@ class CSQVAE(LightningModule):
         for i in range(nsamples):
             data = {
                 "gen_x": generated_x[i].detach().cpu().numpy(),
-                "z": z[i].detach().cpu().numpy(),
+                # "z": z[i].detach().cpu().numpy(),
                 "zq": zq[i].detach().cpu().numpy(),
                 "gt": c_probs[i].argmax(dim=-1).cpu(),
             }

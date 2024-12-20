@@ -6,31 +6,114 @@ from tqdm import tqdm
 from .nn.dit import DiTBlock, FinalLayer
 
 
-class DiffusionModel(nn.Module):
+class DiffusionModule(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.dim = config.latent_dim * 4
         self.latent_dim = config.latent_dim
         self.latent_size = config.latent_size
         self.noise_steps = config.noise_steps
 
-        self.beta = nn.Parameter(
-            torch.linspace(config.beta_start, config.beta_end, self.noise_steps),
-            requires_grad=False,
-        )
-        self.alpha = nn.Parameter(1.0 - self.beta, requires_grad=False)
-        self.alpha_hat = nn.Parameter(
-            torch.cumprod(self.alpha, dim=0), requires_grad=False
-        )
+        self.beta = torch.linspace(config.beta_start, config.beta_end, self.noise_steps)
+        self.alpha = 1.0 - self.beta
+        self.alpha_hat = torch.cumprod(self.alpha, dim=0)
+        self.gamma_hat = torch.cumsum(torch.sqrt(self.alpha_hat), dim=0)
+        self.gamma_hat = self.gamma_hat / self.gamma_hat[-1]
 
-        self.emb_x = nn.Linear(config.latent_dim, self.dim)
-        self.rotary_emb = RotaryEmbedding(self.dim)
-        self.emb_c = nn.Linear(config.n_clusters, self.dim)
-        self.blocks = nn.ModuleList(
-            [DiTBlock(self.dim, config.nheads) for _ in range(config.n_ditblocks)]
+        self.model = DiffusionModel(config)
+
+    def forward(self, zq, t, c):
+        return self.model(zq, t, c)
+
+    def sample_timesteps(self, n):
+        return torch.randint(1, self.noise_steps, (n,))
+
+    def sample_noise(self, zq, t, mu_c):
+        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None]
+        sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None]
+        eps = torch.randn_like(zq)
+        mu_t = self.gamma_hat[t][:, None, None] * mu_c
+        return sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps + mu_t, eps + mu_t
+
+    def train_step(self, zq, c_indices, mu_c):
+        # zq (b, n, dim)
+        # c (b,)
+        t = self.sample_timesteps(zq.size(0)).to(zq.device)
+        zq_t, noise = self.sample_noise(zq, t, mu_c)
+        pred_noise = self(zq_t, t, c_indices)
+
+        # samplig from x1
+        t1 = torch.ones_like(t)
+        zq_1, noise_1 = self.sample_noise(zq, t1, mu_c)
+        pred_noise_1 = self(zq_1, t1, c_indices)
+        beta = self.beta[t1][:, None, None]
+        alpha = self.alpha[t1][:, None, None]
+        alpha_hat = self.alpha_hat[t1][:, None, None]
+        pred_zq_0 = (
+            zq_1 - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise_1
+        ) / torch.sqrt(alpha)
+        return pred_noise, noise, pred_zq_0
+
+    @torch.no_grad()
+    def sample(self, c_probs, mu_c, is_hard_mu=True):
+        self.beta = self.beta.to(c_probs.device)
+        self.alpha = self.alpha.to(c_probs.device)
+        self.alpha_hat = self.alpha_hat.to(c_probs.device)
+
+        b = c_probs.size(0)
+
+        if not is_hard_mu:
+            mu_c = torch.cat([m.unsqueeze(0) for m in mu_c], dim=0)
+            mu_c = mu_c.unsqueeze(0)
+            mu_c = torch.sum(
+                mu_c * c_probs.view(b, self.n_clusters, 1, 1), dim=1
+            )  # (b, npts, ndim)
+        else:
+            mu_c = torch.cat(
+                [mu_c[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
+            )
+
+        zq = torch.randn(
+            (b, self.latent_size[0] * self.latent_size[1], self.latent_dim)
         )
-        self.fin = FinalLayer(self.dim, config.latent_dim)
+        zq = zq.to(c_probs.device)
+        zq = zq + mu_c
+
+        c_indices = c_probs.argmax(-1)
+        for i in tqdm(list(reversed(range(1, self.noise_steps)))):
+            t = torch.full((b,), i).long().to(c_probs.device)
+            pred_noise = self(zq, t, c_indices)
+
+            beta = self.beta[t][:, None, None]
+            alpha = self.alpha[t][:, None, None]
+            alpha_hat = self.alpha_hat[t][:, None, None]
+            # if i > 1:
+            #     noise = torch.randn_like(z)
+            # else:
+            #     noise = torch.zeros_like(z)
+            zq = (
+                zq
+                - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise / torch.sqrt(alpha)
+                # + torch.sqrt(beta) * noise
+            )
+
+        return zq
+
+
+class DiffusionModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dim = config.latent_dim * 4
+        self.latent_dim = config.latent_dim
+
+        self.emb_x = nn.Linear(self.latent_dim, self.dim)
+        self.rotary_emb = RotaryEmbedding(self.dim)
+        # self.emb_c = nn.Linear(config.n_clusters, self.dim)
+        self.emb_c = nn.Embedding(config.n_clusters, self.dim)
+        self.blocks = nn.ModuleList(
+            [DiTBlock(self.dim, config.nheads_dit) for _ in range(config.n_ditblocks)]
+        )
+        self.fin = FinalLayer(self.dim, self.latent_dim)
 
     def pos_encoding(self, t):
         inv_freq = 1.0 / (
@@ -55,56 +138,3 @@ class DiffusionModel(nn.Module):
         x = self.fin(x, c)
 
         return x
-
-    def sample_noise(self, z, t):
-        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None]
-        sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None]
-        eps = torch.randn_like(z)
-        return sqrt_alpha_hat * z + sqrt_one_minus_alpha_hat * eps, eps
-
-    def sample_timesteps(self, n):
-        return torch.randint(1, self.noise_steps, (n,))
-
-    def train_step(self, z, c):
-        # z (b, n, h)
-        # c (b, n_clusters)
-        t = self.sample_timesteps(z.size(0)).to(z.device)
-        zt, noise = self.sample_noise(z, t)
-        pred_noise = self(zt, t, c)
-
-        # samplig from z1
-        t1 = torch.ones_like(t)
-        z1, noise_1 = self.sample_noise(z, t1)
-        pred_noise_1 = self(z1, t1, c)
-        beta = self.beta[t1][:, None, None]
-        alpha = self.alpha[t1][:, None, None]
-        alpha_hat = self.alpha_hat[t1][:, None, None]
-        pred_z = (
-            z1 - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise_1
-        ) / torch.sqrt(alpha)
-        return pred_noise, noise, pred_noise_1, noise_1, pred_z
-
-    @torch.no_grad()
-    def sample(self, c):
-        b = c.size(0)
-        z = torch.randn((b, self.latent_size[0] * self.latent_size[1], self.latent_dim))
-        z = z.to(c.device)
-
-        for i in tqdm(list(reversed(range(1, self.noise_steps)))):
-            t = torch.full((b,), i).long().to(c.device)
-            pred_noise = self(z, t, c)
-
-            alpha = self.alpha[t][:, None, None]
-            alpha_hat = self.alpha_hat[t][:, None, None]
-            beta = self.beta[t][:, None, None]
-            # if i > 1:
-            #     noise = torch.randn_like(z)
-            # else:
-            #     noise = torch.zeros_like(z)
-            z = (
-                (z - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise)
-                / torch.sqrt(alpha)
-                # + torch.sqrt(beta) * noise
-            )
-
-        return z

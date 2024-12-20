@@ -16,11 +16,11 @@ def gumbel_softmax_sample(logits, temperature):
     return F.softmax(y / temperature, dim=-1)
 
 
-def calc_distance(ze, book):
+def calc_distance(z, book):
     distances = (
-        torch.sum(ze**2, dim=-1, keepdim=True)
+        torch.sum(z**2, dim=-1, keepdim=True)
         + torch.sum(book**2, dim=-1)
-        - 2 * torch.matmul(ze, book.t())
+        - 2 * torch.matmul(z, book.t())
     )
 
     return distances
@@ -37,26 +37,47 @@ class GaussianVectorQuantizer(nn.Module):
 
         self.book = nn.Parameter(torch.randn(self.book_size, config.latent_dim))
 
-    def forward(self, ze, log_param_q, temperature, is_train):
-        b = ze.size(0)
+        mu = [torch.randn(1, config.latent_dim) for _ in range(config.n_clusters)]
+        self.mu = nn.ParameterList(
+            [
+                nn.Parameter(torch.randn(self.npts, self.dim) + mu[i])
+                for i in range(config.n_clusters)
+            ]
+        )
+
+    def forward(self, z, c_probs, log_param_q, temperature, is_train):
+        b = z.size(0)
+
+        if is_train:
+            mu = torch.cat([m.unsqueeze(0) for m in self.mu], dim=0)
+            mu = mu.unsqueeze(0)
+            mu = torch.sum(
+                mu * c_probs.view(b, self.n_clusters, 1, 1), dim=1
+            )  # (b, npts, ndim)
+        else:
+            mu = torch.cat(
+                [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
+            )
+
+        z = z + mu
 
         param_q = log_param_q.exp()
         precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
-        logits = -calc_distance(ze.view(-1, self.dim), self.book) * precision_q
+        logits = -calc_distance(z.view(-1, self.dim), self.book) * precision_q
 
         if is_train:
             encodings = gumbel_softmax_sample(logits, temperature)
             zq = torch.mm(encodings, self.book)
         else:
             indices = torch.argmax(logits, dim=-1).unsqueeze(1)
-            encodings = torch.zeros(b * self.npts, self.book_size).to(ze.device)
+            encodings = torch.zeros(b * self.npts, self.book_size).to(z.device)
             encodings.scatter_(1, indices, 1)
             zq = torch.mm(encodings, self.book)
 
         logits = logits.view(b, -1, self.book_size)
         zq = zq.view(b, -1, self.dim)
 
-        return zq, precision_q, logits
+        return zq, precision_q, logits, mu
 
     def sample_zq_from_indices(self, indices):
         b = indices.size(0)
