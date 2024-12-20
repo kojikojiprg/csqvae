@@ -141,11 +141,8 @@ class CSQVAE(LightningModule):
         z = z.permute(0, 2, 3, 1).contiguous()
         z = z.view(b, -1, self.latent_dim)
 
-        is_train_quantizer = (
-            self.current_epoch < self.config.start_finetuning_epoch and is_train
-        )
         zq, precision_q, logits, mu = self.quantizer(
-            z, c_probs, self.log_param_q, self.temperature, is_train_quantizer
+            z, c_probs, self.log_param_q, self.temperature, is_train
         )
 
         h, w = self.latent_size

@@ -46,8 +46,8 @@ lmd_c_real: 10
 # optim
 n_labeled_samples: 60000
 epochs: 1000
-warmup_epochs: 10
-start_finetuning_epoch: 50
+warmup_epochs: 0
+start_finetuning_epoch: 1
 lr: 0.001
 lr_gamma: 1
 batch_size: 128

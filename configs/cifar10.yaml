@@ -22,7 +22,7 @@ temp_min: 0.001
 n_resblocks: 6
 latent_dim: 64
 latent_size: [8, 8]
-nlayers: 3
+nlayers: 6
 nheads: 16
 dropout: 0.1
 
@@ -40,14 +40,14 @@ lmd_lrc: 1
 lmd_klc: 1
 lmd_kld: 1
 lmd_ldt: 0.1
-lmd_c_elbo: 1
+lmd_c_elbo: 0.1
 lmd_c_real: 10
 
 # optim
 n_labeled_samples: 60000
 epochs: 1000
 warmup_epochs: 10
-start_finetuning_epoch: 50
+start_finetuning_epoch: 200
 lr: 0.001
 lr_gamma: 1
 batch_size: 128
