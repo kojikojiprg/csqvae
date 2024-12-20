@@ -354,22 +354,24 @@ class CSQVAE(LightningModule):
         c_probs = c_probs.to(self.device, torch.float32)
         nsamples = c_probs.size(0)
 
-        zq = self.diffusion.sample(c_probs, self.quantizer.mu)
+        z = self.diffusion.sample(c_probs, self.quantizer.mu)
         zq, precision_q, logits, mu = self.quantizer(
-            zq, c_probs, self.log_param_q, self.temperature, False
+            z, c_probs, self.log_param_q, self.temperature, False
         )
 
         # generate samples
         h, w = self.latent_size
+        z = z.view(nsamples, h, w, self.latent_dim)
         zq = zq.view(nsamples, h, w, self.latent_dim).permute(0, 3, 1, 2)
         generated_x = self.decoder(zq)
         generated_x = generated_x.permute(0, 2, 3, 1)
 
+        zq = zq.permute(0, 2, 3, 1)
         results = []
         for i in range(nsamples):
             data = {
                 "gen_x": generated_x[i].detach().cpu().numpy(),
-                # "z": z[i].detach().cpu().numpy(),
+                "z": z[i].detach().cpu().numpy(),
                 "zq": zq[i].detach().cpu().numpy(),
                 "gt": c_probs[i].argmax(dim=-1).cpu(),
             }
