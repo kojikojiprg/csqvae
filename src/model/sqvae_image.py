@@ -154,13 +154,28 @@ class CSQVAE(LightningModule):
         recon_x = self.decoder(zq)
 
         if is_train:
-            zq_flat = zq.detach().view(b, self.latent_dim, -1).permute(0, 2, 1)
+            zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
             pred_noise, noise, zq_prior = self.diffusion.train_step(
-                zq_flat, c_probs.argmax(-1), mu.detach()
+                zq_flat.detach(), c_probs.argmax(-1), mu.detach()
             )
-            zq_prior = zq_prior.view(b, h, w, self.latent_dim)
-            zq_prior = zq_prior.permute(0, 3, 1, 2)
-            return recon_x, z, zq, precision_q, c_logits, pred_noise, noise, zq_prior
+            param_q = self.log_param_q.detach().exp()
+            precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+            logits_prior = self.quantizer.calc_distance(
+                zq_prior.view(-1, self.latent_dim), precision_q
+            )
+            logits_prior = logits_prior.view(b, -1, self.book_size)
+
+            return (
+                recon_x,
+                z,
+                zq,
+                logits,
+                precision_q,
+                c_logits,
+                pred_noise,
+                noise,
+                logits_prior,
+            )
         else:
             return recon_x, z, zq, logits, c_probs
 
@@ -234,15 +249,24 @@ class CSQVAE(LightningModule):
         self.temperature = temp_cur
 
         # forward
-        recon_x, z, zq, precision_q, c_logits, pred_noise, noise, zq_prior = self(
-            x, True
-        )
+        (
+            recon_x,
+            z,
+            zq,
+            logits,
+            precision_q,
+            c_logits,
+            pred_noise,
+            noise,
+            logits_prior,
+        ) = self(x, True)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
-        kl_discrete = self.loss_x(zq, zq_prior)
         # kl_discrete = self.loss_kl_discrete(logits)
+        # kl_discrete = self.loss_x(zq, zq_prior)
+        kl_discrete = self.loss_kl_logits(logits, logits_prior)
         ldt = self.loss_diffusion(pred_noise, noise)
         lc_elbo = self.loss_c_elbo(c_logits)
 
@@ -279,13 +303,13 @@ class CSQVAE(LightningModule):
 
         loss_dict = dict(
             x=lrc_x.item(),
-            kl_continuous=kl_continuous.item(),
-            kl_discrete=kl_discrete.item(),
+            klc=kl_continuous.item(),
+            kld=kl_discrete.item(),
+            ldt=ldt.item(),
             log_param_q=self.log_param_q.item(),
             log_param_q_cls=self.log_param_q_cls.item(),
             c_elbo=lc_elbo.item(),
             c_real=lc_real.item(),
-            dt=ldt.item(),
             total=loss_total.item(),
         )
         self.log_dict(loss_dict, prog_bar=True, logger=True)

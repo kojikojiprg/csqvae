@@ -16,16 +16,6 @@ def gumbel_softmax_sample(logits, temperature):
     return F.softmax(y / temperature, dim=-1)
 
 
-def calc_distance(z, book):
-    distances = (
-        torch.sum(z**2, dim=-1, keepdim=True)
-        + torch.sum(book**2, dim=-1)
-        - 2 * torch.matmul(z, book.t())
-    )
-
-    return distances
-
-
 class GaussianVectorQuantizer(nn.Module):
     def __init__(self, config: SimpleNamespace):
         super().__init__()
@@ -45,6 +35,15 @@ class GaussianVectorQuantizer(nn.Module):
             ]
         )
 
+    def calc_distance(self, z, precision_q):
+        distances = -(
+            torch.sum(z**2, dim=-1, keepdim=True)
+            + torch.sum(self.book**2, dim=-1)
+            - 2 * torch.matmul(z, self.book.t())
+        )
+
+        return distances * precision_q
+
     def forward(self, z, c_probs, log_param_q, temperature, is_train):
         b = z.size(0)
 
@@ -63,7 +62,7 @@ class GaussianVectorQuantizer(nn.Module):
 
         param_q = log_param_q.exp()
         precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
-        logits = -calc_distance(z.view(-1, self.dim), self.book) * precision_q
+        logits = self.calc_distance(z.view(-1, self.dim), precision_q)
 
         if is_train:
             encodings = gumbel_softmax_sample(logits, temperature)

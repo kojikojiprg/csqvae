@@ -17,10 +17,20 @@ class DiffusionModule(nn.Module):
         self.beta = torch.linspace(config.beta_start, config.beta_end, self.noise_steps)
         self.alpha = 1.0 - self.beta
         self.alpha_hat = torch.cumprod(self.alpha, dim=0)
-        self.gamma_hat = torch.cumsum(torch.sqrt(self.alpha_hat), dim=0)
-        self.gamma_hat = self.gamma_hat / self.gamma_hat[-1]
+        self.gamma_hat = self.gen_gamma_hat(self.noise_steps)
 
         self.model = DiffusionModel(config)
+
+    def gen_gamma_hat(self, noise_steps):
+        gammas = []
+        for t in range(noise_steps):
+            alpha_hat_t_inv = torch.cumprod(
+                torch.flip(self.alpha[:t], dims=(0,)), dim=0
+            )
+            gamma = torch.sum(torch.sqrt(alpha_hat_t_inv))
+            gammas.append(gamma)
+        gammas = torch.tensor(gammas)
+        return gammas / gammas[-1]
 
     def forward(self, zq, t, c):
         return self.model(zq, t, c)
