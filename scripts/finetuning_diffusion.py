@@ -56,7 +56,7 @@ if __name__ == "__main__":
         shutil.copyfile(config_path, copy_config_path)
 
     # model checkpoint callback
-    filename = f"csqvae-mnist-d{config.latent_dim}-bs{config.book_size}_finetuned.ckpt"
+    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}_finetuned.ckpt"
     model_checkpoint = ModelCheckpoint(
         checkpoint_dir,
         filename=filename + "-best-{epoch}",
