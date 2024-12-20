@@ -141,8 +141,11 @@ class CSQVAE(LightningModule):
         z = z.permute(0, 2, 3, 1).contiguous()
         z = z.view(b, -1, self.latent_dim)
 
+        is_train_quantizer = (
+            self.current_epoch < self.config.start_finetuning_epoch and is_train
+        )
         zq, precision_q, logits, mu = self.quantizer(
-            z, c_probs, self.log_param_q, self.temperature, is_train
+            z, c_probs, self.log_param_q, self.temperature, is_train_quantizer
         )
 
         h, w = self.latent_size
@@ -155,9 +158,14 @@ class CSQVAE(LightningModule):
 
         if is_train:
             zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-            pred_noise, noise, zq_prior = self.diffusion.train_step(
-                zq_flat.detach(), c_probs.argmax(-1), mu.detach()
-            )
+            if self.current_epoch >= self.config.start_finetuning_epoch:
+                pred_noise, noise, zq_prior = self.diffusion.train_step(
+                    zq_flat.detach(), c_probs.detach(), mu.detach()
+                )
+            else:
+                pred_noise, noise, zq_prior = self.diffusion.train_step(
+                    zq_flat, c_probs, mu
+                )
             param_q = self.log_param_q.detach().exp()
             precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
             logits_prior = self.quantizer.calc_distance(
@@ -277,14 +285,14 @@ class CSQVAE(LightningModule):
             loss_total = (
                 lrc_x * self.config.lmd_lrc
                 + kl_continuous * self.config.lmd_klc
-                + kl_discrete * 0.0000000001
-                + ldt * 0.0000000001
+                + kl_discrete * 1e-10
+                + ldt * 1e-10
                 + lc_elbo * self.config.lmd_c_elbo
                 + lc_real * self.config.lmd_c_real
             )
-        elif self.current_epoch >= self.config.freeze_csqvae_epoch:
+        elif self.current_epoch >= self.config.start_finetuning_epoch:
             loss_total = (
-                lrc_x * 0
+                lrc_x * 1e-10
                 + kl_continuous * 1e-10
                 + kl_discrete * self.config.lmd_kld
                 + ldt * self.config.lmd_ldt
@@ -350,9 +358,9 @@ class CSQVAE(LightningModule):
         nsamples = c_probs.size(0)
 
         zq = self.diffusion.sample(c_probs, self.quantizer.mu)
-        # zq, precision_q, logits, mu = self.quantizer(
-        #     zq, c_probs, self.log_param_q, self.temperature, False
-        # )
+        zq, precision_q, logits, mu = self.quantizer(
+            zq, c_probs, self.log_param_q, self.temperature, False
+        )
 
         # generate samples
         h, w = self.latent_size

@@ -8,17 +8,17 @@ patch_size: [7, 7]
 n_clusters: 10
 param_q_init_cls: 1
 temp_init_cls: 1.0
-temp_decay_cls: 0.0001
-temp_min_cls: 0.01
+temp_decay_cls: 0.00001
+temp_min_cls: 0.001
 
 # quantization
 book_size: 128
 param_q_init: 10
 temp_init: 1.0
-temp_decay: 0.00001
-temp_min: 0.01
+temp_decay: 0.000001
+temp_min: 0.001
 
-# model
+# encoder-decoder
 n_resblocks: 2
 latent_dim: 64
 latent_size: [7, 7]
@@ -26,30 +26,29 @@ nlayers: 3
 nheads: 16
 dropout: 0.1
 
-# gen_model: "pixelcnn"
-# n_cnnblocks_pixelcnn: 12
-
+# diffusion
 gen_model: "diffusion"
-noise_steps: 100
-beta_start: 0.01
-beta_end: 0.1
+noise_steps: 1000
+beta_start: 0.0001
+beta_end: 0.02
 n_ditblocks: 6
 nheads_dit: 16
+hard_emb_c: False
 
 # loss
 lmd_lrc: 1
 lmd_klc: 1
 lmd_kld: 1
-lmd_ldt: 1
+lmd_ldt: 0.1
 lmd_c_elbo: 1
-lmd_c_real: 4
+lmd_c_real: 10
 
 # optim
 n_labeled_samples: 60000
 epochs: 1000
-warmup_epochs: 0
-freeze_csqvae_epoch: 1000
-lr: 0.0001
+warmup_epochs: 10
+start_finetuning_epoch: 50
+lr: 0.001
 lr_gamma: 1
 batch_size: 128
 accumulate_grad_batches: 1

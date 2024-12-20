@@ -45,17 +45,17 @@ class DiffusionModule(nn.Module):
         mu_t = self.gamma_hat[t][:, None, None] * mu_c
         return sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps + mu_t, eps + mu_t
 
-    def train_step(self, zq, c_indices, mu_c):
+    def train_step(self, zq, c_probs, mu_c):
         # zq (b, n, dim)
         # c (b,)
         t = self.sample_timesteps(zq.size(0)).to(zq.device)
         zq_t, noise = self.sample_noise(zq, t, mu_c)
-        pred_noise = self(zq_t, t, c_indices)
+        pred_noise = self(zq_t, t, c_probs)
 
         # samplig from x1
         t1 = torch.ones_like(t)
         zq_1, noise_1 = self.sample_noise(zq, t1, mu_c)
-        pred_noise_1 = self(zq_1, t1, c_indices)
+        pred_noise_1 = self(zq_1, t1, c_probs)
         beta = self.beta[t1][:, None, None]
         alpha = self.alpha[t1][:, None, None]
         alpha_hat = self.alpha_hat[t1][:, None, None]
@@ -65,14 +65,14 @@ class DiffusionModule(nn.Module):
         return pred_noise, noise, pred_zq_0
 
     @torch.no_grad()
-    def sample(self, c_probs, mu_c, is_hard_mu=True):
+    def sample(self, c_probs, mu_c, is_hard_mu_c=True):
         self.beta = self.beta.to(c_probs.device)
         self.alpha = self.alpha.to(c_probs.device)
         self.alpha_hat = self.alpha_hat.to(c_probs.device)
 
         b = c_probs.size(0)
 
-        if not is_hard_mu:
+        if not is_hard_mu_c:
             mu_c = torch.cat([m.unsqueeze(0) for m in mu_c], dim=0)
             mu_c = mu_c.unsqueeze(0)
             mu_c = torch.sum(
@@ -89,22 +89,21 @@ class DiffusionModule(nn.Module):
         zq = zq.to(c_probs.device)
         zq = zq + mu_c
 
-        c_indices = c_probs.argmax(-1)
         for i in tqdm(list(reversed(range(1, self.noise_steps)))):
             t = torch.full((b,), i).long().to(c_probs.device)
-            pred_noise = self(zq, t, c_indices)
+            pred_noise = self(zq, t, c_probs)
 
             beta = self.beta[t][:, None, None]
             alpha = self.alpha[t][:, None, None]
             alpha_hat = self.alpha_hat[t][:, None, None]
-            # if i > 1:
-            #     noise = torch.randn_like(z)
-            # else:
-            #     noise = torch.zeros_like(z)
+            if i > 1:
+                noise = torch.randn_like(zq)
+            else:
+                noise = torch.zeros_like(zq)
             zq = (
                 zq
                 - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise / torch.sqrt(alpha)
-                # + torch.sqrt(beta) * noise
+                + torch.sqrt(beta) * noise
             )
 
         return zq
@@ -115,11 +114,14 @@ class DiffusionModel(nn.Module):
         super().__init__()
         self.dim = config.latent_dim * 4
         self.latent_dim = config.latent_dim
+        self.hard_emb_c = config.hard_emb_c
 
         self.emb_x = nn.Linear(self.latent_dim, self.dim)
         self.rotary_emb = RotaryEmbedding(self.dim)
-        # self.emb_c = nn.Linear(config.n_clusters, self.dim)
-        self.emb_c = nn.Embedding(config.n_clusters, self.dim)
+        if config.hard_emb_c:
+            self.emb_c = nn.Embedding(config.n_clusters, self.dim)
+        else:
+            self.emb_c = nn.Linear(config.n_clusters, self.dim)
         self.blocks = nn.ModuleList(
             [DiTBlock(self.dim, config.nheads_dit) for _ in range(config.n_ditblocks)]
         )
@@ -140,7 +142,10 @@ class DiffusionModel(nn.Module):
 
         t = t.unsqueeze(-1).type(torch.float)
         t = self.pos_encoding(t)
-        c = self.emb_c(c)
+        if self.hard_emb_c:
+            c = self.emb_c(c.argmax(-1))
+        else:
+            c = self.emb_c(c)
         c = c + t
 
         for block in self.blocks:
