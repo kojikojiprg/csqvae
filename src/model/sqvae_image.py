@@ -12,11 +12,7 @@ from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
 from src.model.module.diffusion import DiffusionModule
 from src.model.module.mnist import Decoder as Decoder_MNIST
 from src.model.module.mnist import Encoder as Encoder_MNIST
-from src.model.module.pixelcnn import PixelCNN
 from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_sample
-
-# from src.model.module.cifar10 import ClassificationHead as ClassificationHead_CIFAR10
-# from src.model.module.mnist import ClassificationHead as ClassificationHead_MNIST
 
 
 def weights_init(m):
@@ -34,9 +30,10 @@ def weights_init(m):
 
 
 class CSQVAE(LightningModule):
-    def __init__(self, config: SimpleNamespace):
+    def __init__(self, config: SimpleNamespace, is_finetuning: bool = False):
         super().__init__()
         self.config = config
+        self.is_finetuning = is_finetuning
 
         self.dataset_name = config.name
         self.n_clusters = config.n_clusters
@@ -76,11 +73,9 @@ class CSQVAE(LightningModule):
         if self.dataset_name == "mnist":
             self.encoder = Encoder_MNIST(self.config)
             self.decoder = Decoder_MNIST(self.config)
-            # self.cls_head = ClassificationHead_MNIST(self.config)
         elif self.dataset_name == "cifar10":
             self.encoder = Encoder_CIFAR10(self.config)
             self.decoder = Decoder_CIFAR10(self.config)
-            # self.cls_head = ClassificationHead_CIFAR10(self.config)
         self.cls_head = VisionTransformer(
             self.config.x_shape[1:],
             self.config.patch_size,
@@ -90,26 +85,26 @@ class CSQVAE(LightningModule):
             depth=self.config.nlayers,
             num_heads=self.config.nheads,
         )
-
         self.quantizer = GaussianVectorQuantizer(self.config)
-        if self.config.gen_model == "pixelcnn":
-            self.pixelcnn = PixelCNN(self.config)
-        elif self.config.gen_model == "diffusion":
-            self.diffusion = DiffusionModule(self.config)
-        else:
-            raise NotImplementedError
+        self.diffusion = DiffusionModule(self.config)
 
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
 
-        self.init_weights()
+        if self.is_finetuning:
+            for p in self.parameters():
+                p.requires_grad_(False)
+            self.diffusion.model.requires_grad_(True)
+            self.diffusion.model.rotary_emb.freqs.requires_grad_(False)
+        else:
+            self.init_weights()
 
     def init_weights(self):
         self.apply(weights_init)
 
         # Zero-out adaLN modulation layers in DiT blocks:
-        # nn.init.constant_(self.diffusion.emb_c.weight, 0)
-        # nn.init.constant_(self.diffusion.emb_c.bias, 0)
+        nn.init.constant_(self.diffusion.model.emb_c.weight, 0)
+        nn.init.constant_(self.diffusion.model.emb_c.bias, 0)
         for block in self.diffusion.model.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
@@ -128,7 +123,7 @@ class CSQVAE(LightningModule):
     def forward(self, x, is_train):
         b = x.size(0)
         c_logits = self.cls_head(x)
-        if is_train:
+        if is_train and not self.is_finetuning:
             param_q = self.log_param_q_cls.exp()
             precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
             c_logits_scaled = c_logits * precision_q
@@ -142,7 +137,11 @@ class CSQVAE(LightningModule):
         z = z.view(b, -1, self.latent_dim)
 
         zq, precision_q, logits, mu = self.quantizer(
-            z, c_probs, self.log_param_q, self.temperature, is_train
+            z,
+            c_probs,
+            self.log_param_q,
+            self.temperature,
+            is_train and not self.is_finetuning,
         )
 
         h, w = self.latent_size
@@ -155,14 +154,10 @@ class CSQVAE(LightningModule):
 
         if is_train:
             zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-            if self.current_epoch >= self.config.start_finetuning_epoch:
-                pred_noise, noise, zq_prior = self.diffusion.train_step(
-                    zq_flat.detach(), c_probs.detach(), mu.detach()
-                )
-            else:
-                pred_noise, noise, zq_prior = self.diffusion.train_step(
-                    zq_flat, c_probs, mu
-                )
+            self.diffusion.send_sigma_to_device(self.device)
+            pred_noise, noise, zq_prior = self.diffusion.train_step(
+                zq_flat, c_probs, mu
+            )
             param_q = self.log_param_q.detach().exp()
             precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
             logits_prior = self.quantizer.calc_distance(
@@ -269,8 +264,6 @@ class CSQVAE(LightningModule):
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
-        # kl_discrete = self.loss_kl_discrete(logits)
-        # kl_discrete = self.loss_x(zq, zq_prior)
         kl_discrete = self.loss_kl_logits(logits, logits_prior)
         ldt = self.loss_diffusion(pred_noise, noise)
         lc_elbo = self.loss_c_elbo(c_logits)
@@ -287,14 +280,14 @@ class CSQVAE(LightningModule):
                 + lc_elbo * self.config.lmd_c_elbo
                 + lc_real * self.config.lmd_c_real
             )
-        elif self.current_epoch >= self.config.start_finetuning_epoch:
+        elif self.is_finetuning:
             loss_total = (
-                lrc_x * 1e-10
-                + kl_continuous * 1e-10
+                lrc_x * 0
+                + kl_continuous * 0
                 + kl_discrete * self.config.lmd_kld
                 + ldt * self.config.lmd_ldt
-                + lc_elbo * 1e-10
-                + lc_real * 1e-10
+                + lc_elbo * 0
+                + lc_real * 0
             )
         else:
             loss_total = (

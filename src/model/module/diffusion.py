@@ -21,6 +21,13 @@ class DiffusionModule(nn.Module):
 
         self.model = DiffusionModel(config)
 
+    def send_sigma_to_device(self, device):
+        if device != self.beta.device:
+            self.beta = self.beta.to(device)
+            self.alpha = self.alpha.to(device)
+            self.alpha_hat = self.alpha_hat.to(device)
+            self.gamma_hat = self.gamma_hat.to(device)
+
     def gen_gamma_hat(self, noise_steps):
         gammas = []
         for t in range(noise_steps):
@@ -114,14 +121,10 @@ class DiffusionModel(nn.Module):
         super().__init__()
         self.dim = config.latent_dim * 4
         self.latent_dim = config.latent_dim
-        self.hard_emb_c = config.hard_emb_c
 
         self.emb_x = nn.Linear(self.latent_dim, self.dim)
         self.rotary_emb = RotaryEmbedding(self.dim)
-        if config.hard_emb_c:
-            self.emb_c = nn.Embedding(config.n_clusters, self.dim)
-        else:
-            self.emb_c = nn.Linear(config.n_clusters, self.dim)
+        self.emb_c = nn.Linear(config.n_clusters, self.dim)
         self.blocks = nn.ModuleList(
             [DiTBlock(self.dim, config.nheads_dit) for _ in range(config.n_ditblocks)]
         )
@@ -142,10 +145,7 @@ class DiffusionModel(nn.Module):
 
         t = t.unsqueeze(-1).type(torch.float)
         t = self.pos_encoding(t)
-        if self.hard_emb_c:
-            c = self.emb_c(c.argmax(-1))
-        else:
-            c = self.emb_c(c)
+        c = self.emb_c(c)
         c = c + t
 
         for block in self.blocks:

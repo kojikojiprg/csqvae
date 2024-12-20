@@ -33,21 +33,19 @@ beta_start: 0.0001
 beta_end: 0.02
 n_ditblocks: 12
 nheads_dit: 16
-hard_emb_c: False
 
 # loss
 lmd_lrc: 1
 lmd_klc: 1
 lmd_kld: 1
 lmd_ldt: 0.1
-lmd_c_elbo: 0.1
+lmd_c_elbo: 0.01
 lmd_c_real: 10
 
 # optim
 n_labeled_samples: 60000
-epochs: 1000
+epochs: 200
 warmup_epochs: 10
-start_finetuning_epoch: 200
 lr: 0.001
 lr_gamma: 1
 batch_size: 128
