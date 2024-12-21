@@ -270,8 +270,8 @@ class CSQVAE(LightningModule):
         recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x, True)
 
         # samplig z_prior from diffusion
-        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(z_flat, c_probs, mu)
+        zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
+        pred_noise, noise, zq_prior = self.diffusion.train_step(zq_flat, c_probs, mu)
         logits_prior = self.quantizer.calc_distance(
             zq_prior.view(-1, self.latent_dim), precision_q
         )
@@ -290,14 +290,24 @@ class CSQVAE(LightningModule):
         # clustering loss of labeled data
         lc_real = self.loss_c_real(c_logits, labels)
 
-        loss_total = (
-            lrc_x * self.config.loss.csqvae.lmd_x
-            + kl_continuous * self.config.loss.csqvae.lmd_klc
-            + kl_discrete * self.config.loss.csqvae.lmd_kld
-            + ldt * self.config.loss.csqvae.lmd_ldt
-            + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
-            + lc_real * self.config.loss.csqvae.lmd_c_real
-        )
+        if self.current_epoch < self.config.loss.csqvae.warmup_diffusion_t:
+            loss_total = (
+                lrc_x * self.config.loss.csqvae.lmd_x
+                + kl_continuous * self.config.loss.csqvae.lmd_klc
+                + kl_discrete * 1e-5
+                + ldt * 1e-5
+                + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
+                + lc_real * self.config.loss.csqvae.lmd_c_real
+            )
+        else:
+            loss_total = (
+                lrc_x * self.config.loss.csqvae.lmd_x
+                + kl_continuous * self.config.loss.csqvae.lmd_klc
+                + kl_discrete * self.config.loss.csqvae.lmd_kld
+                + ldt * self.config.loss.csqvae.lmd_ldt
+                + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
+                + lc_real * self.config.loss.csqvae.lmd_c_real
+            )
         loss_dict = dict(
             x=lrc_x.item(),
             klc=kl_continuous.item(),
@@ -320,8 +330,8 @@ class CSQVAE(LightningModule):
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
-        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(z_flat, c_probs, mu)
+        zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
+        pred_noise, noise, zq_prior = self.diffusion.train_step(zq_flat, c_probs, mu)
         logits_prior = self.quantizer.calc_distance(
             zq_prior.view(-1, self.latent_dim), precision_q
         )

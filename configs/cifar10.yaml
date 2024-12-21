@@ -38,10 +38,11 @@ loss:
   csqvae:
     lmd_x: 1
     lmd_klc: 1
-    lmd_kld: 0.1
-    lmd_ldt: 0.00001
+    lmd_kld: 1
+    lmd_ldt: 0.001
     lmd_c_elbo: 0.1
     lmd_c_real: 10
+    warmup_diffusion_t: 100
   diffusion:
     lmd_kld: 1
     lmd_ldt: 1
