@@ -253,7 +253,7 @@ class CSQVAE(LightningModule):
             epochs = self.config.optim.csqvae.epochs
         else:
             epochs = self.config.optim.diffusion.epochs
-        print(f"\nEpoch: {self.current_epoch} / {epochs}, Done.\n")
+        print(f"\nEpoch {self.current_epoch} / {epochs}: Done.\n")
 
     def training_step_csqvae(self, batch):
         x, labels = batch
