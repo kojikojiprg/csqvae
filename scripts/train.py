@@ -77,7 +77,7 @@ if __name__ == "__main__":
     model = CSQVAE(config)
 
     # model checkpoint callback
-    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}.ckpt"
+    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}"
     model_checkpoint = ModelCheckpoint(
         checkpoint_dir,
         filename=filename + "-best-{epoch}",
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     model.configure_model()
 
     # model checkpoint callback
-    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}_diffusion.ckpt"
+    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}_diffusion"
     model_checkpoint = ModelCheckpoint(
         checkpoint_dir,
         filename=filename + "-best-{epoch}",
