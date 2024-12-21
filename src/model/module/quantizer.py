@@ -77,11 +77,15 @@ class GaussianVectorQuantizer(nn.Module):
 
         return zq, precision_q, logits, mu
 
-    def sample_zq_from_indices(self, indices):
-        b = indices.size(0)
+    def z_to_zq(self, z, log_param_q):
+        b = z.size(0)
 
-        indices = indices.view(-1, 1)
-        encodings = torch.zeros(b * self.npts, self.book_size).to(indices.device)
+        param_q = log_param_q.exp()
+        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        logits = self.calc_distance(z.view(-1, self.dim), precision_q)
+
+        indices = torch.argmax(logits, dim=-1).unsqueeze(1)
+        encodings = torch.zeros(b * self.npts, self.book_size).to(z.device)
         encodings.scatter_(1, indices, 1)
         zq = torch.mm(encodings, self.book)
 

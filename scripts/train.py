@@ -4,6 +4,7 @@ import shutil
 import sys
 from glob import glob
 
+import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -20,11 +21,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset", choices=["mnist", "cifar10"], type=str)
     parser.add_argument("-g", "--gpu_ids", type=int, nargs="*", default=None)
-    parser.add_argument("-ckpt", "--checkpoint", required=False, type=str, default=None)
     args = parser.parse_args()
     dataset_name = args.dataset
     gpu_ids = args.gpu_ids
-    pre_checkpoint_path = args.checkpoint
 
     # load config
     config_name = dataset_name
@@ -34,19 +33,18 @@ if __name__ == "__main__":
     # create checkpoint directory of this version
     checkpoint_dir = f"models/{dataset_name}"
     ckpt_dirs = glob(os.path.join(checkpoint_dir, "*/"))
-    version_prefix = ""
     ckpt_dirs = [d for d in ckpt_dirs if os.path.basename(d[:-1]).isdecimal()]
     if len(ckpt_dirs) > 0:
         max_v_num = 0
         for d in ckpt_dirs:
             last_ckpt_dir = os.path.dirname(d)
-            v_num = int(last_ckpt_dir.split("/")[-1].replace(version_prefix, ""))
+            v_num = int(last_ckpt_dir.split("/")[-1])
             if v_num > max_v_num:
                 max_v_num = v_num
         v_num = max_v_num + 1
     else:
         v_num = 0
-    version = f"{version_prefix}{v_num}"
+    version = str(v_num)
     checkpoint_dir = os.path.join(checkpoint_dir, version)
 
     if "WORLD_SIZE" not in os.environ:
@@ -54,17 +52,6 @@ if __name__ == "__main__":
         os.makedirs(checkpoint_dir, exist_ok=False)
         copy_config_path = os.path.join(checkpoint_dir, f"{config_name}.yaml")
         shutil.copyfile(config_path, copy_config_path)
-
-    # model checkpoint callback
-    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}.ckpt"
-    model_checkpoint = ModelCheckpoint(
-        checkpoint_dir,
-        filename=filename + "-best-{epoch}",
-        monitor="loss",
-        mode="min",
-        save_last=True,
-    )
-    model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
 
     # load dataset
     summary_path = f"{checkpoint_dir}/summary_train_labels.tsv"
@@ -82,11 +69,23 @@ if __name__ == "__main__":
         pin_memory=True,
     )
 
+    # ====================================================================================================
+    #  Training CSQ-VAE
+    # ====================================================================================================
+    print("Training CSQ-VAE")
     # create model
-    if pre_checkpoint_path is not None:
-        model = CSQVAE.load_from_checkpoint(pre_checkpoint_path, config=config)
-    else:
-        model = CSQVAE(config)
+    model = CSQVAE(config)
+
+    # model checkpoint callback
+    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}.ckpt"
+    model_checkpoint = ModelCheckpoint(
+        checkpoint_dir,
+        filename=filename + "-best-{epoch}",
+        monitor="loss",
+        mode="min",
+        save_last=True,
+    )
+    model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
 
     ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
     logger = TensorBoardLogger("logs", name=dataset_name, version=version)
@@ -96,7 +95,49 @@ if __name__ == "__main__":
         devices=gpu_ids,
         logger=logger,
         callbacks=[model_checkpoint],
-        max_epochs=config.epochs,
+        max_epochs=config.epochs_csqvae,
+        accumulate_grad_batches=config.accumulate_grad_batches,
+        benchmark=True,
+    )
+    trainer.fit(model, train_dataloaders=dataloader)
+    torch.cuda.empty_cache()
+
+    # ====================================================================================================
+    #  Training Diffusion
+    # ====================================================================================================
+    print("Training Diffusion")
+    # load model
+    checkpoint_path = sorted(glob(f"{checkpoint_dir}/*.ckpt"))[-1]
+    model = CSQVAE.load_from_checkpoint(
+        checkpoint_path,
+        map_location=f"cuda:{gpu_ids[0]}",
+        config=config,
+        is_train_diffusion=True,
+    )
+    model.configure_model()
+
+    # model checkpoint callback
+    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}_diffusion.ckpt"
+    model_checkpoint = ModelCheckpoint(
+        checkpoint_dir,
+        filename=filename + "-best-{epoch}",
+        monitor="loss",
+        mode="min",
+        save_last=True,
+    )
+    model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
+
+    ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
+    logger = TensorBoardLogger(
+        "logs", name=dataset_name, version=version + "_diffusion"
+    )
+    trainer = Trainer(
+        accelerator="cuda",
+        strategy=ddp,
+        devices=gpu_ids,
+        logger=logger,
+        callbacks=[model_checkpoint],
+        max_epochs=config.epochs_diffusion,
         accumulate_grad_batches=config.accumulate_grad_batches,
         benchmark=True,
     )

@@ -27,27 +27,29 @@ nheads: 16
 dropout: 0.1
 
 # diffusion
-gen_model: "diffusion"
 noise_steps: 1000
 beta_start: 0.0001
 beta_end: 0.02
 n_ditblocks: 6
 nheads_dit: 16
 
-# loss
+# loss csqvae
 lmd_lrc: 1
 lmd_klc: 1
 lmd_kld: 1
-lmd_ldt: 0.1
 lmd_c_elbo: 1
 lmd_c_real: 10
 
+# loss diffusion
+lmd_kld_diffusion: 1
+lmd_ldt_diffusion: 1
+
 # optim
 n_labeled_samples: 60000
-epochs: 100
-warmup_epochs: 10
-lr: 0.001
-lr_gamma: 1
+epochs_csqvae: 100
+epochs_diffusion: 500
+lr_csqvae: 0.001
+lr_diffusion: 0.0001
 batch_size: 128
 accumulate_grad_batches: 1
 num_workers: 4
