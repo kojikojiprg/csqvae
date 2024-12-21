@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch import LightningModule
 from timm.models.vision_transformer import VisionTransformer
+from timm.scheduler.cosine_lr import CosineLRScheduler
 
 from src.model.module.cifar10 import Decoder as Decoder_CIFAR10
 from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
@@ -115,10 +116,31 @@ class CSQVAE(LightningModule):
 
     def configure_optimizers(self):
         if not self.is_train_diffusion:
-            opt = torch.optim.AdamW(self.parameters(), lr=self.config.lr_csqvae)
+            opt = torch.optim.AdamW(self.parameters(), lr=self.config.optim.csqvae.lr)
+            sch = CosineLRScheduler(
+                opt,
+                t_initial=self.config.optim.csqvae.epochs,
+                lr_min=self.config.optim.csqvae.lr_min,
+                warmup_t=self.config.optim.csqvae.warmup_t,
+                warmup_lr_init=self.config.optim.csqvae.warmup_lr_init,
+                warmup_prefix=True,
+            )
         else:
-            opt = torch.optim.AdamW(self.parameters(), lr=self.config.lr_diffusion)
-        return opt
+            opt = torch.optim.AdamW(
+                self.parameters(), lr=self.config.optim.diffusion.lr
+            )
+            sch = CosineLRScheduler(
+                opt,
+                t_initial=self.config.optim.diffusion.epochs,
+                lr_min=self.config.optim.diffusion.lr_min,
+                warmup_t=self.config.optim.diffusion.warmup_t,
+                warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
+                warmup_prefix=True,
+            )
+        return [opt], [{"scheduler": sch, "interval": "epoch"}]
+
+    def lr_scheduler_step(self, scheduler, metric):
+        scheduler.step(epoch=self.current_epoch)
 
     def forward(self, x, is_train):
         b = x.size(0)
@@ -228,9 +250,9 @@ class CSQVAE(LightningModule):
 
     def on_train_epoch_end(self):
         if not self.is_train_diffusion:
-            epochs = self.config.epochs_csqvae
+            epochs = self.config.optim.csqvae.epochs
         else:
-            epochs = self.config.epochs_diffusion
+            epochs = self.config.optim.diffusion.epochs
         print(f"\nEpoch: {self.current_epoch} / {epochs}, Done.\n")
 
     def training_step_csqvae(self, batch):
@@ -269,12 +291,12 @@ class CSQVAE(LightningModule):
         lc_real = self.loss_c_real(c_logits, labels)
 
         loss_total = (
-            lrc_x * self.config.lmd_lrc
-            + kl_continuous * self.config.lmd_klc
-            + kl_discrete * self.config.lmd_kld
-            + ldt * self.config.lmd_ldt
-            + lc_elbo * self.config.lmd_c_elbo
-            + lc_real * self.config.lmd_c_real
+            lrc_x * self.config.loss.csqvae.lmd_x
+            + kl_continuous * self.config.loss.csqvae.lmd_klc
+            + kl_discrete * self.config.loss.csqvae.lmd_kld
+            + ldt * self.config.loss.csqvae.lmd_ldt
+            + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
+            + lc_real * self.config.loss.csqvae.lmd_c_real
         )
         loss_dict = dict(
             x=lrc_x.item(),
@@ -297,6 +319,7 @@ class CSQVAE(LightningModule):
         recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x, True)
 
         # samplig z_prior from diffusion
+        self.diffusion.send_sigma_to_device(self.device)
         z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
         pred_noise, noise, zq_prior = self.diffusion.train_step(z_flat, c_probs, mu)
         logits_prior = self.quantizer.calc_distance(
@@ -312,8 +335,8 @@ class CSQVAE(LightningModule):
         ldt = self.loss_diffusion(pred_noise, noise)
 
         loss_total = (
-            kl_discrete * self.config.lmd_kld_diffusion
-            + ldt * self.config.lmd_ldt_diffusion
+            kl_discrete * self.config.loss.diffusion.lmd_kld
+            + ldt * self.config.loss.diffusion.lmd_ldt
         )
         loss_dict = dict(
             kld=kl_discrete.item(),

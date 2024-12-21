@@ -63,9 +63,9 @@ if __name__ == "__main__":
         )
     dataloader = DataLoader(
         dataset,
-        config.batch_size,
+        config.optim.batch_size,
         shuffle=True,
-        num_workers=config.num_workers,
+        num_workers=config.optim.num_workers,
         pin_memory=True,
     )
 
@@ -95,8 +95,8 @@ if __name__ == "__main__":
         devices=gpu_ids,
         logger=logger,
         callbacks=[model_checkpoint],
-        max_epochs=config.epochs_csqvae,
-        accumulate_grad_batches=config.accumulate_grad_batches,
+        max_epochs=config.optim.csqvae.epochs,
+        accumulate_grad_batches=config.optim.accumulate_grad_batches,
         benchmark=True,
     )
     trainer.fit(model, train_dataloaders=dataloader)
@@ -117,7 +117,9 @@ if __name__ == "__main__":
     model.configure_model()
 
     # model checkpoint callback
-    filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}_diffusion"
+    filename = (
+        f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}_diffusion"
+    )
     model_checkpoint = ModelCheckpoint(
         checkpoint_dir,
         filename=filename + "-best-{epoch}",
@@ -137,8 +139,8 @@ if __name__ == "__main__":
         devices=gpu_ids,
         logger=logger,
         callbacks=[model_checkpoint],
-        max_epochs=config.epochs_diffusion,
-        accumulate_grad_batches=config.accumulate_grad_batches,
+        max_epochs=config.optim.diffusion.epochs,
+        accumulate_grad_batches=config.optim.accumulate_grad_batches,
         benchmark=True,
     )
     trainer.fit(model, train_dataloaders=dataloader)
