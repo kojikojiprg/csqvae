@@ -37,7 +37,8 @@ nheads_dit: 16
 lmd_lrc: 1
 lmd_klc: 1
 lmd_kld: 1
-lmd_c_elbo: 1
+lmd_ldt: 0.0000000001
+lmd_c_elbo: 0.1
 lmd_c_real: 10
 
 # loss diffusion

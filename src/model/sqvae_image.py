@@ -85,7 +85,6 @@ class CSQVAE(LightningModule):
             self.diffusion.model.rotary_emb.freqs.requires_grad_(False)
         else:
             self.init_weights()
-            self.diffusion.requires_grad_(False)
 
     def init_weights(self):
         def _weights_init(m):
@@ -159,7 +158,7 @@ class CSQVAE(LightningModule):
         recon_x = self.decoder(zq)
 
         if is_train:
-            return recon_x, z, zq, logits, precision_q, c_logits, mu
+            return recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu
         else:
             return recon_x, z, zq, logits, c_probs
 
@@ -236,6 +235,7 @@ class CSQVAE(LightningModule):
 
     def training_step_csqvae(self, batch):
         x, labels = batch
+        b = x.size(0)
 
         # update temperature of gumbel softmax
         temp_cur = self.calc_temperature(
@@ -245,40 +245,42 @@ class CSQVAE(LightningModule):
         temp_cur = self.calc_temperature(self.temp_init, self.temp_decay, self.temp_min)
         self.temperature = temp_cur
 
-        # forward
-        recon_x, z, zq, logits, precision_q, c_logits, mu = self(x, True)
+        recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x, True)
 
-        # sampling z_prior
-        z_prior = mu + torch.randn_like(mu)
+        # samplig z_prior from diffusion
+        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
+        pred_noise, noise, zq_prior = self.diffusion.train_step(z_flat, c_probs, mu)
         logits_prior = self.quantizer.calc_distance(
-            z_prior.view(-1, self.latent_dim), precision_q
+            zq_prior.view(-1, self.latent_dim), precision_q
         )
+        logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # scaling logits_prior
-        param_q = self.log_param_q.detach().exp()
-        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
-        logits_prior = logits_prior.view(x.size(0), -1, self.book_size)
+        logits = logits * precision_q
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
         kl_discrete = self.loss_kl_logits(logits, logits_prior)
+        ldt = self.loss_diffusion(pred_noise, noise)
         lc_elbo = self.loss_c_elbo(c_logits)
 
         # clustering loss of labeled data
         lc_real = self.loss_c_real(c_logits, labels)
+
         loss_total = (
             lrc_x * self.config.lmd_lrc
             + kl_continuous * self.config.lmd_klc
             + kl_discrete * self.config.lmd_kld
+            + ldt * self.config.lmd_ldt
             + lc_elbo * self.config.lmd_c_elbo
             + lc_real * self.config.lmd_c_real
         )
-
         loss_dict = dict(
             x=lrc_x.item(),
             klc=kl_continuous.item(),
             kld=kl_discrete.item(),
+            ldt=ldt.item(),
             log_param_q=self.log_param_q.item(),
             log_param_q_cls=self.log_param_q_cls.item(),
             c_elbo=lc_elbo.item(),
@@ -292,33 +294,27 @@ class CSQVAE(LightningModule):
     def training_step_diffusion(self, batch):
         x, labels = batch
         b = x.size(0)
-
-        # forward
-        recon_x, z, zq, logits, precision_q, c_logits, mu = self(x, True)
+        recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x, True)
 
         # samplig z_prior from diffusion
-        zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        self.diffusion.send_sigma_to_device(self.device)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(
-            zq_flat, c_logits.softmax(-1).detach(), mu.detach()
-        )
-
-        # scaling logits_prior
-        param_q = self.log_param_q.detach().exp()
-        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
+        pred_noise, noise, zq_prior = self.diffusion.train_step(z_flat, c_probs, mu)
         logits_prior = self.quantizer.calc_distance(
             zq_prior.view(-1, self.latent_dim), precision_q
         )
         logits_prior = logits_prior.view(b, -1, self.book_size)
 
+        # scaling logits_prior
+        logits = logits * precision_q
+
         # loss
         kl_discrete = self.loss_kl_logits(logits, logits_prior)
         ldt = self.loss_diffusion(pred_noise, noise)
+
         loss_total = (
             kl_discrete * self.config.lmd_kld_diffusion
             + ldt * self.config.lmd_ldt_diffusion
         )
-
         loss_dict = dict(
             kld=kl_discrete.item(),
             ldt=ldt.item(),

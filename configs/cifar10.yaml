@@ -36,8 +36,9 @@ nheads_dit: 16
 # loss csqvae
 lmd_lrc: 1
 lmd_klc: 1
-lmd_kld: 1
-lmd_c_elbo: 0.01
+lmd_kld: 0.1
+lmd_ldt: 0.0000000001
+lmd_c_elbo: 0.1
 lmd_c_real: 10
 
 # loss diffusion
