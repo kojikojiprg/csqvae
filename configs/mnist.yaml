@@ -9,14 +9,14 @@ patch_size: [7, 7]
 n_clusters: 10
 param_q_init_cls: 1
 temp_init_cls: 1.0
-temp_decay_cls: 0.00001
+temp_decay_cls: 0.0001
 temp_min_cls: 0.001
 
 # quantization
 book_size: 128
 param_q_init: 10
 temp_init: 1.0
-temp_decay: 0.000001
+temp_decay: 0.00001
 temp_min: 0.001
 
 # encoder-decoder
@@ -29,7 +29,7 @@ dropout: 0.1
 
 # diffusion
 noise_steps: 1000
-beta_start: 0.0001
+beta_start: 0.001
 beta_end: 0.02
 n_ditblocks: 6
 nheads_dit: 16
@@ -39,27 +39,25 @@ loss:
     lmd_x: 1
     lmd_klc: 1
     lmd_kld: 1
-    lmd_ldt: 0.1
-    lmd_c_elbo: 0.1
+    lmd_ldt: 0.001
+    lmd_c_elbo: 1
     lmd_c_real: 10
-    warmup_diffusion_t: 50
+    warmup_diffusion_t: 5
   diffusion:
-    lmd_kld: 1
+    lmd_kld: 10
     lmd_ldt: 1
 
 optim:
   csqvae:
-    epochs: 100
+    epochs: 50
     lr: 0.001
     lr_min: 0.0001
-    warmup_t: 10
-    warmup_lr_init: 0.000001
+    warmup_t: 5
+    warmup_lr_init: 0.00001
   diffusion:
     epochs: 500
     lr: 0.0001
-    lr_min: 0.00001
-    warmup_t: 50
-    warmup_lr_init: 0.0000001
+    lr_min: 0.0001
 
   batch_size: 128
   accumulate_grad_batches: 1

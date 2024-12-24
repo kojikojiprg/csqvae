@@ -48,8 +48,8 @@ class DiffusionModule(nn.Module):
     def sample_noise(self, zq, t, mu_c):
         sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None]
         sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None]
-        eps = torch.randn_like(zq)
         mu_t = self.gamma_hat[t][:, None, None] * mu_c
+        eps = torch.randn_like(zq)
         return sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps + mu_t, eps + mu_t
 
     def train_step(self, zq, c_probs, mu_c):
@@ -67,15 +67,13 @@ class DiffusionModule(nn.Module):
         alpha = self.alpha[t1][:, None, None]
         alpha_hat = self.alpha_hat[t1][:, None, None]
         pred_zq_0 = (
-            zq_1 - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise_1
+            zq_1 - beta / torch.sqrt(1 - alpha_hat) * pred_noise_1
         ) / torch.sqrt(alpha)
         return pred_noise, noise, pred_zq_0
 
     @torch.no_grad()
     def sample(self, c_probs, mu_c, is_hard_mu_c=True):
-        self.beta = self.beta.to(c_probs.device)
-        self.alpha = self.alpha.to(c_probs.device)
-        self.alpha_hat = self.alpha_hat.to(c_probs.device)
+        self.send_sigma_to_device(c_probs.device)
 
         b = c_probs.size(0)
 
@@ -107,11 +105,9 @@ class DiffusionModule(nn.Module):
                 noise = torch.randn_like(zq)
             else:
                 noise = torch.zeros_like(zq)
-            zq = (
-                zq
-                - (beta / (torch.sqrt(1 - alpha_hat))) * pred_noise / torch.sqrt(alpha)
-                + torch.sqrt(beta) * noise
-            )
+            zq = (zq - beta / torch.sqrt(1 - alpha_hat) * pred_noise) / torch.sqrt(
+                alpha
+            ) + torch.sqrt(beta) * noise
 
         return zq
 

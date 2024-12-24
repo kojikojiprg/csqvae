@@ -133,9 +133,6 @@ class CSQVAE(LightningModule):
                 opt,
                 t_initial=self.config.optim.diffusion.epochs,
                 lr_min=self.config.optim.diffusion.lr_min,
-                warmup_t=self.config.optim.diffusion.warmup_t,
-                warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
-                warmup_prefix=True,
             )
         return [opt], [{"scheduler": sch, "interval": "epoch"}]
 
@@ -278,7 +275,7 @@ class CSQVAE(LightningModule):
         logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # scaling logits_prior
-        logits = logits * precision_q
+        logits_prior = logits_prior * precision_q
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
@@ -294,8 +291,8 @@ class CSQVAE(LightningModule):
             loss_total = (
                 lrc_x * self.config.loss.csqvae.lmd_x
                 + kl_continuous * self.config.loss.csqvae.lmd_klc
-                + kl_discrete * 1e-5
-                + ldt * 1e-5
+                + kl_discrete * 1e-10
+                + ldt * 1e-10
                 + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
                 + lc_real * self.config.loss.csqvae.lmd_c_real
             )
@@ -338,7 +335,7 @@ class CSQVAE(LightningModule):
         logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # scaling logits_prior
-        logits = logits * precision_q
+        logits_prior = logits_prior * precision_q
 
         # loss
         kl_discrete = self.loss_kl_logits(logits, logits_prior)
