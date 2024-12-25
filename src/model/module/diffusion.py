@@ -115,14 +115,14 @@ class DiffusionModule(nn.Module):
 class DiffusionModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dim = config.latent_dim * 4
+        self.dim = config.latent_dim_diffusion
         self.latent_dim = config.latent_dim
 
         self.emb_x = nn.Linear(self.latent_dim, self.dim)
         self.rotary_emb = RotaryEmbedding(self.dim)
         self.emb_c = nn.Linear(config.n_clusters, self.dim)
         self.blocks = nn.ModuleList(
-            [DiTBlock(self.dim, config.nheads_dit) for _ in range(config.n_ditblocks)]
+            [DiTBlock(self.dim, config.n_heads_dit) for _ in range(config.n_blocks_dit)]
         )
         self.fin = FinalLayer(self.dim, self.latent_dim)
 

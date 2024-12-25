@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import torchvision
 from torchvision.transforms import ToTensor
@@ -28,7 +30,7 @@ class CIFAR10(torchvision.datasets.CIFAR10):
         self.targets[unlabeled_indices] = -1
 
         # summarize
-        if summary_path is not None:
+        if summary_path is not None and "WORLD_SIZE" not in os.environ:
             labeled_targets = self.targets[self.targets != -1]
             unique, counts = np.unique(labeled_targets, return_counts=True)
             summary = [("label", "count")]

@@ -23,26 +23,29 @@ temp_min: 0.001
 n_resblocks: 2
 latent_dim: 64
 latent_size: [7, 7]
-nlayers: 3
-nheads: 16
+
+# classification head
+n_blocks_cls: 3
+latent_dim_cls: 512
+n_heads_cls: 16
 dropout: 0.1
 
 # diffusion
 noise_steps: 1000
 beta_start: 0.001
 beta_end: 0.02
-n_ditblocks: 6
-nheads_dit: 16
+latent_dim_diffusion: 512
+n_blocks_dit: 12
+n_heads_dit: 16
 
 loss:
   csqvae:
     lmd_x: 1
     lmd_klc: 1
     lmd_kld: 1
-    lmd_ldt: 0.001
+    lmd_ldt: 0.0001
     lmd_c_elbo: 1
     lmd_c_real: 10
-    warmup_diffusion_t: 5
   diffusion:
     lmd_kld: 10
     lmd_ldt: 1
@@ -54,8 +57,9 @@ optim:
     lr_min: 0.0001
     warmup_t: 5
     warmup_lr_init: 0.00001
+    warmup_diffusion_t: 5
   diffusion:
-    epochs: 500
+    epochs: 1000
     lr: 0.0001
     lr_min: 0.0001
 

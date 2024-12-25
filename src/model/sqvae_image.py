@@ -69,9 +69,9 @@ class CSQVAE(LightningModule):
             self.config.patch_size,
             self.config.x_shape[0],
             self.config.n_clusters,
-            embed_dim=self.config.latent_dim,
-            depth=self.config.nlayers,
-            num_heads=self.config.nheads,
+            embed_dim=self.config.latent_dim_cls,
+            depth=self.config.n_blocks_cls,
+            num_heads=self.config.n_heads_cls,
         )
         self.quantizer = GaussianVectorQuantizer(self.config)
         self.diffusion = DiffusionModule(self.config)
@@ -287,7 +287,7 @@ class CSQVAE(LightningModule):
         # clustering loss of labeled data
         lc_real = self.loss_c_real(c_logits, labels)
 
-        if self.current_epoch < self.config.loss.csqvae.warmup_diffusion_t:
+        if self.current_epoch < self.config.optim.csqvae.warmup_diffusion_t:
             loss_total = (
                 lrc_x * self.config.loss.csqvae.lmd_x
                 + kl_continuous * self.config.loss.csqvae.lmd_klc
