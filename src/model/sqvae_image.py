@@ -34,7 +34,6 @@ class CSQVAE(LightningModule):
         self.log_param_q_cls = nn.Parameter(
             torch.tensor(log_param_q_cls, dtype=torch.float32)
         )
-
         self.temp_init = config.temp_init
         self.temp_decay = config.temp_decay
         self.temp_min = config.temp_min
@@ -133,6 +132,9 @@ class CSQVAE(LightningModule):
                 opt,
                 t_initial=self.config.optim.diffusion.epochs,
                 lr_min=self.config.optim.diffusion.lr_min,
+                warmup_t=self.config.optim.diffusion.warmup_t,
+                warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
+                warmup_prefix=True,
             )
         return [opt], [{"scheduler": sch, "interval": "epoch"}]
 

@@ -61,18 +61,19 @@ if __name__ == "__main__":
         dataset = CIFAR10(
             True, config.n_labeled_samples, 42, "data/", True, summary_path
         )
-    dataloader = DataLoader(
-        dataset,
-        config.optim.batch_size,
-        shuffle=True,
-        num_workers=config.optim.num_workers,
-        pin_memory=True,
-    )
 
     # ====================================================================================================
     #  Training CSQ-VAE
     # ====================================================================================================
     print("Training CSQ-VAE")
+    dataloader = DataLoader(
+        dataset,
+        config.optim.csqvae.batch_size,
+        shuffle=True,
+        num_workers=config.optim.num_workers,
+        pin_memory=True,
+    )
+
     # create model
     model = CSQVAE(config)
 
@@ -96,7 +97,7 @@ if __name__ == "__main__":
         logger=logger,
         callbacks=[model_checkpoint],
         max_epochs=config.optim.csqvae.epochs,
-        accumulate_grad_batches=config.optim.accumulate_grad_batches,
+        accumulate_grad_batches=config.optim.csqvae.accumulate_grad_batches,
         benchmark=True,
     )
     trainer.fit(model, train_dataloaders=dataloader)
@@ -106,6 +107,14 @@ if __name__ == "__main__":
     #  Training Diffusion
     # ====================================================================================================
     print("Training Diffusion")
+    dataloader = DataLoader(
+        dataset,
+        config.optim.diffusion.batch_size,
+        shuffle=True,
+        num_workers=config.optim.num_workers,
+        pin_memory=True,
+    )
+
     # load model
     checkpoint_path = sorted(glob(f"{checkpoint_dir}/*.ckpt"))[-1]
     model = CSQVAE.load_from_checkpoint(
@@ -140,7 +149,7 @@ if __name__ == "__main__":
         logger=logger,
         callbacks=[model_checkpoint],
         max_epochs=config.optim.diffusion.epochs,
-        accumulate_grad_batches=config.optim.accumulate_grad_batches,
+        accumulate_grad_batches=config.optim.diffusion.accumulate_grad_batches,
         benchmark=True,
     )
     trainer.fit(model, train_dataloaders=dataloader)

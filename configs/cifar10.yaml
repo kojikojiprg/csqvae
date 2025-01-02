@@ -43,7 +43,7 @@ loss:
     lmd_x: 1
     lmd_klc: 1
     lmd_kld: 1
-    lmd_ldt: 0.000001
+    lmd_ldt: 0.001
     lmd_c_elbo: 0.1
     lmd_c_real: 10
   diffusion:
@@ -52,17 +52,21 @@ loss:
 
 optim:
   csqvae:
-    epochs: 200
+    epochs: 800
+    batch_size: 128
+    accumulate_grad_batches: 8
     lr: 0.001
-    lr_min: 0.0001
+    lr_min: 0.00001
+    warmup_t: 80
+    warmup_lr_init: 0.00001
+    warmup_diffusion_t: 80
+  diffusion:
+    epochs: 1000
+    batch_size: 128
+    accumulate_grad_batches: 1
+    lr: 0.0001
+    lr_min: 0.00001
     warmup_t: 10
     warmup_lr_init: 0.00001
-    warmup_diffusion_t: 10
-  diffusion:
-    epochs: 2000
-    lr: 0.0001
-    lr_min: 0.0001
 
-  batch_size: 128
-  accumulate_grad_batches: 4
   num_workers: 4
