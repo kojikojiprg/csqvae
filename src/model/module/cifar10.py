@@ -57,19 +57,14 @@ class Encoder(nn.Module):
         )
         self.conv3 = nn.Conv2d(latent_dim, latent_dim, 3, 1, 1, bias=False)
 
-        self.emb_c = MLP(config.n_clusters, out_dim=config.latent_dim)
-
         self.res_blocks = nn.ModuleList(
             [ResidualBlock(latent_dim) for _ in range(config.n_resblocks)]
         )
 
-    def forward(self, x, c):
+    def forward(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
-
-        c = self.emb_c(c)[:, :, None, None]
-        x = x + c
 
         for res_block in self.res_blocks:
             x = res_block(x)
