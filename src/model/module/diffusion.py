@@ -9,7 +9,7 @@ from .nn.dit import DiTBlock, FinalLayer
 class DiffusionModule(nn.Module):
     def __init__(self, config):
         super().__init__()
-
+        self.n_clusters = config.n_clusters
         self.latent_dim = config.latent_dim
         self.latent_size = config.latent_size
         self.noise_steps = config.noise_steps
@@ -52,9 +52,14 @@ class DiffusionModule(nn.Module):
         eps = torch.randn_like(zq)
         return sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps + mu_t, eps + mu_t
 
-    def train_step(self, zq, c_probs, mu_c):
+    def train_step(self, zq, c_probs, mu_c, is_c_onehot=False):
         # zq (b, n, dim)
-        # c (b,)
+        # c_probs (b, n_clusters)
+        if is_c_onehot:
+            c_probs = torch.eye(self.n_clusters, device=zq.device)[
+                c_probs.argmax(dim=-1)
+            ]
+
         t = self.sample_timesteps(zq.size(0)).to(zq.device)
         zq_t, noise = self.sample_noise(zq, t, mu_c)
         pred_noise = self(zq_t, t, c_probs)

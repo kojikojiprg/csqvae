@@ -1,6 +1,6 @@
 # dataset
 name: "mnist"
-n_labeled_samples: 60000
+n_labeled_samples: 6000
 x_dim: 784  # 28 * 28
 x_shape: [1, 28, 28]
 patch_size: [7, 7]
@@ -42,31 +42,30 @@ loss:
   csqvae:
     lmd_x: 1
     lmd_klc: 1
-    lmd_kld: 1
-    lmd_ldt: 0.001
+    lmd_kld: 0.0001
+    lmd_ldt: 0.0001
     lmd_c_elbo: 1
     lmd_c_real: 10
   diffusion:
-    lmd_kld: 10
+    lmd_kld: 1
     lmd_ldt: 1
 
 optim:
   csqvae:
-    epochs: 50
-    batch_size: 128
-    accumulate_grad_batches: 1
-    lr: 0.001
-    lr_min: 0.00001
-    warmup_t: 5
-    warmup_lr_init: 0.00001
-    warmup_diffusion_t: 5
-  diffusion:
-    epochs: 1000
+    epochs: 100
     batch_size: 128
     accumulate_grad_batches: 1
     lr: 0.0001
     lr_min: 0.00001
     warmup_t: 10
     warmup_lr_init: 0.00001
+  diffusion:
+    epochs: 1000
+    batch_size: 128
+    accumulate_grad_batches: 1
+    lr: 0.00001
+    # lr_min: 0.00001
+    # warmup_t: 10
+    # warmup_lr_init: 0.00001
 
   num_workers: 4

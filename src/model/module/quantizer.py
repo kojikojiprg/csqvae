@@ -29,7 +29,7 @@ class GaussianVectorQuantizer(nn.Module):
 
         self.mu = nn.ParameterList(
             [
-                nn.Parameter(torch.randn(self.npts, self.dim))
+                nn.Parameter(torch.randn(self.npts, self.dim), requires_grad=False)
                 for i in range(config.n_clusters)
             ]
         )
@@ -56,6 +56,9 @@ class GaussianVectorQuantizer(nn.Module):
             mu = torch.cat(
                 [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
             )
+        # mu = torch.cat(
+        #     [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
+        # )
 
         z = z + mu
 

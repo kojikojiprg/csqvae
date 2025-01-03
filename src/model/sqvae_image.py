@@ -124,19 +124,20 @@ class CSQVAE(LightningModule):
                 warmup_lr_init=self.config.optim.csqvae.warmup_lr_init,
                 warmup_prefix=True,
             )
+            return [opt], [{"scheduler": sch, "interval": "epoch"}]
         else:
             opt = torch.optim.AdamW(
                 self.parameters(), lr=self.config.optim.diffusion.lr
             )
-            sch = CosineLRScheduler(
-                opt,
-                t_initial=self.config.optim.diffusion.epochs,
-                lr_min=self.config.optim.diffusion.lr_min,
-                warmup_t=self.config.optim.diffusion.warmup_t,
-                warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
-                warmup_prefix=True,
-            )
-        return [opt], [{"scheduler": sch, "interval": "epoch"}]
+            # sch = CosineLRScheduler(
+            #     opt,
+            #     t_initial=self.config.optim.diffusion.epochs,
+            #     lr_min=self.config.optim.diffusion.lr_min,
+            #     warmup_t=self.config.optim.diffusion.warmup_t,
+            #     warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
+            #     warmup_prefix=True,
+            # )
+            return opt
 
     def lr_scheduler_step(self, scheduler, metric):
         scheduler.step(epoch=self.current_epoch)
@@ -155,8 +156,7 @@ class CSQVAE(LightningModule):
             c_probs = c_logits.softmax(-1)
 
         # encoding
-        z = self.encoder(x, c_probs)
-
+        z = self.encoder(x)
         z = z.permute(0, 2, 3, 1).contiguous()
         z = z.view(b, -1, self.latent_dim)
 
@@ -270,7 +270,9 @@ class CSQVAE(LightningModule):
 
         # samplig z_prior from diffusion
         zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(zq_flat, c_probs, mu)
+        pred_noise, noise, zq_prior = self.diffusion.train_step(
+            zq_flat, c_probs, mu, is_c_onehot=False
+        )
         logits_prior = self.quantizer.calc_distance(
             zq_prior.view(-1, self.latent_dim), precision_q
         )
@@ -289,24 +291,14 @@ class CSQVAE(LightningModule):
         # clustering loss of labeled data
         lc_real = self.loss_c_real(c_logits, labels)
 
-        if self.current_epoch < self.config.optim.csqvae.warmup_diffusion_t:
-            loss_total = (
-                lrc_x * self.config.loss.csqvae.lmd_x
-                + kl_continuous * self.config.loss.csqvae.lmd_klc
-                + kl_discrete * 1e-10
-                + ldt * 1e-10
-                + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
-                + lc_real * self.config.loss.csqvae.lmd_c_real
-            )
-        else:
-            loss_total = (
-                lrc_x * self.config.loss.csqvae.lmd_x
-                + kl_continuous * self.config.loss.csqvae.lmd_klc
-                + kl_discrete * self.config.loss.csqvae.lmd_kld
-                + ldt * self.config.loss.csqvae.lmd_ldt
-                + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
-                + lc_real * self.config.loss.csqvae.lmd_c_real
-            )
+        loss_total = (
+            lrc_x * self.config.loss.csqvae.lmd_x
+            + kl_continuous * self.config.loss.csqvae.lmd_klc
+            + kl_discrete * self.config.loss.csqvae.lmd_kld
+            + ldt * self.config.loss.csqvae.lmd_ldt
+            + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
+            + lc_real * self.config.loss.csqvae.lmd_c_real
+        )
         loss_dict = dict(
             x=lrc_x.item(),
             klc=kl_continuous.item(),
@@ -330,7 +322,9 @@ class CSQVAE(LightningModule):
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
         zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(zq_flat, c_probs, mu)
+        pred_noise, noise, zq_prior = self.diffusion.train_step(
+            zq_flat, c_probs, mu, is_c_onehot=True
+        )
         logits_prior = self.quantizer.calc_distance(
             zq_prior.view(-1, self.latent_dim), precision_q
         )
