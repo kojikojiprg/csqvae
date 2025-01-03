@@ -298,7 +298,7 @@ class CSQVAE(LightningModule):
             epochs = self.config.optim.diffusion.epochs
         elif self.training_stage == "csqvae":
             epochs = self.config.optim.csqvae.epochs
-        print(f"\nEpoch {self.current_epoch} / {epochs}: Done.\n")
+        print(f"\nEpoch {self.current_epoch} / {epochs}: Done. Device {self.device}.\n")
 
     def training_step_sqvae(self, batch):
         x, labels = batch

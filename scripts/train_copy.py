@@ -209,8 +209,8 @@ if __name__ == "__main__":
         devices=gpu_ids,
         logger=logger,
         callbacks=[model_checkpoint],
-        max_epochs=config.optim.diffusion.epochs,
-        accumulate_grad_batches=config.optim.diffusion.accumulate_grad_batches,
+        max_epochs=config.optim.csqvae.epochs,
+        accumulate_grad_batches=config.optim.csqvae.accumulate_grad_batches,
         benchmark=True,
     )
     trainer.fit(model, train_dataloaders=dataloader)

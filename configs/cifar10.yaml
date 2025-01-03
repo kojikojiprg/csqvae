@@ -1,6 +1,6 @@
 # dataset
 name: "cifar10"
-n_labeled_samples: 25000
+n_labeled_samples: 4000
 x_dim: 3072  # 3 * 32 * 32
 x_shape: [3, 32, 32]
 patch_size: [8, 8]
@@ -32,40 +32,52 @@ dropout: 0.1
 
 # diffusion
 noise_steps: 1000
-beta_start: 0.001
+beta_start: 0.004
 beta_end: 0.02
 latent_dim_diffusion: 512
 n_blocks_dit: 12
 n_heads_dit: 16
 
 loss:
-  csqvae:
+  sqvae:
     lmd_x: 1
     lmd_klc: 1
-    lmd_kld: 0.00001
-    lmd_ldt: 0.00001
-    lmd_c_elbo: 1
-    lmd_c_real: 10
+    lmd_kld: 1
   diffusion:
     lmd_kld: 1
     lmd_ldt: 1
+  csqvae:
+    lmd_x: 1
+    lmd_klc: 1
+    lmd_kld: 1
+    lmd_ldt: 1
+    lmd_c_elbo: 1
+    lmd_c_real: 100
 
 optim:
-  csqvae:
-    epochs: 200
-    batch_size: 128
+  sqvae:
+    epochs: 100
+    batch_size: 64
+    accumulate_grad_batches: 1
+    lr: 0.001
+    lr_min: 0.0001
+    warmup_t: 10
+    warmup_lr_init: 0.00001
+  diffusion:
+    epochs: 100
+    batch_size: 64
     accumulate_grad_batches: 1
     lr: 0.0001
     lr_min: 0.00001
-    warmup_t: 20
+    warmup_t: 10
     warmup_lr_init: 0.00001
-  diffusion:
+  csqvae:
     epochs: 1000
-    batch_size: 128
+    batch_size: 64
     accumulate_grad_batches: 1
     lr: 0.0001
-    # lr_min: 0.00001
-    # warmup_t: 10
-    # warmup_lr_init: 0.00001
+    lr_min: 0.00001
+    warmup_t: 10
+    warmup_lr_init: 0.000001
 
   num_workers: 4
