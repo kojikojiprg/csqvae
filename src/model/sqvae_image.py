@@ -73,7 +73,7 @@ class CSQVAE(LightningModule):
             num_heads=self.config.n_heads_cls,
         )
         self.quantizer = GaussianVectorQuantizer(self.config)
-        self.diffusion = DiffusionModule(self.config)
+        self.diffusion = DiffusionModule(self.config, with_condition=True)
 
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
@@ -230,6 +230,32 @@ class CSQVAE(LightningModule):
 
         return lc_real
 
+    def loss_c(self, c_logits, labels):
+        c_prob = F.softmax(c_logits, dim=-1)
+        if torch.all(labels == -1):  # all samples are unlabeled
+            lc_labeled = torch.Tensor([0.0]).to(self.device)
+
+            c_log_prob = F.log_softmax(c_logits, dim=-1)
+            lc_unlabeled = torch.sum(c_prob * c_log_prob, dim=1).mean()
+        elif torch.all(labels != -1):  # all samples are unlabeled
+            lc_labeled = F.cross_entropy(c_prob, labels, reduction="sum")
+            lc_labeled = lc_labeled / c_prob.size(0)
+
+            lc_unlabeled = torch.Tensor([0.0]).to(self.device)
+        else:
+            mask_supervised = labels != -1
+            lc_labeled = F.cross_entropy(
+                c_prob[mask_supervised], labels[mask_supervised], reduction="sum"
+            )
+            lc_labeled = lc_labeled / c_prob[mask_supervised].size(0)
+
+            c_log_prob = F.log_softmax(c_logits, dim=-1)
+            lc_unlabeled = torch.sum(
+                c_prob[~mask_supervised] * c_log_prob[~mask_supervised], dim=1
+            ).mean()
+
+        return lc_labeled, lc_unlabeled
+
     def loss_kl_logits(self, logits, logits_prior, eps=1e-10):
         q = logits.softmax(dim=-1)
         q_log = logits.log_softmax(dim=-1)
@@ -286,10 +312,11 @@ class CSQVAE(LightningModule):
         kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
         kl_discrete = self.loss_kl_logits(logits, logits_prior)
         ldt = self.loss_diffusion(pred_noise, noise)
-        lc_elbo = self.loss_c_elbo(c_logits)
+        # lc_elbo = self.loss_c_elbo(c_logits)
 
         # clustering loss of labeled data
-        lc_real = self.loss_c_real(c_logits, labels)
+        # lc_real = self.loss_c_real(c_logits, labels)
+        lc_real, lc_elbo = self.loss_c(c_logits, labels)
 
         loss_total = (
             lrc_x * self.config.loss.csqvae.lmd_x

@@ -7,7 +7,7 @@ from .nn.dit import DiTBlock, FinalLayer
 
 
 class DiffusionModule(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, with_condition: bool):
         super().__init__()
         self.n_clusters = config.n_clusters
         self.latent_dim = config.latent_dim
@@ -19,7 +19,7 @@ class DiffusionModule(nn.Module):
         self.alpha_hat = torch.cumprod(self.alpha, dim=0)
         self.gamma_hat = self.gen_gamma_hat(self.noise_steps)
 
-        self.model = DiffusionModel(config)
+        self.model = DiffusionModel(config, with_condition)
 
     def send_sigma_to_device(self, device):
         if device != self.beta.device:
@@ -48,9 +48,17 @@ class DiffusionModule(nn.Module):
     def sample_noise(self, zq, t, mu_c):
         sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None]
         sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None]
-        mu_t = self.gamma_hat[t][:, None, None] * mu_c
-        eps = torch.randn_like(zq)
-        return sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps + mu_t, eps + mu_t
+
+        if mu_c is None:
+            eps = torch.randn_like(zq)
+            return sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps, eps
+        else:
+            mu_t = self.gamma_hat[t][:, None, None] * mu_c
+            eps = torch.randn_like(zq)
+            return (
+                sqrt_alpha_hat * zq + sqrt_one_minus_alpha_hat * eps + mu_t,
+                eps + mu_t,
+            )
 
     def train_step(self, zq, c_probs, mu_c, is_c_onehot=False):
         # zq (b, n, dim)
@@ -118,8 +126,9 @@ class DiffusionModule(nn.Module):
 
 
 class DiffusionModel(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, with_condition):
         super().__init__()
+        self.with_condition = with_condition
         self.dim = config.latent_dim_diffusion
         self.latent_dim = config.latent_dim
 
@@ -130,6 +139,9 @@ class DiffusionModel(nn.Module):
             [DiTBlock(self.dim, config.n_heads_dit) for _ in range(config.n_blocks_dit)]
         )
         self.fin = FinalLayer(self.dim, self.latent_dim)
+
+        if not self.with_condition:
+            self.emb_c.requires_grad_(False)
 
     def pos_encoding(self, t):
         inv_freq = 1.0 / (
@@ -146,8 +158,12 @@ class DiffusionModel(nn.Module):
 
         t = t.unsqueeze(-1).type(torch.float)
         t = self.pos_encoding(t)
-        c = self.emb_c(c)
-        c = c + t
+
+        if self.with_condition:
+            c = self.emb_c(c)
+            c = c + t
+        else:
+            c = t
 
         for block in self.blocks:
             x = block(x, c)

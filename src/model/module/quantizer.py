@@ -29,7 +29,7 @@ class GaussianVectorQuantizer(nn.Module):
 
         self.mu = nn.ParameterList(
             [
-                nn.Parameter(torch.randn(self.npts, self.dim), requires_grad=False)
+                nn.Parameter(torch.randn(self.npts, self.dim))
                 for i in range(config.n_clusters)
             ]
         )
@@ -46,21 +46,21 @@ class GaussianVectorQuantizer(nn.Module):
     def forward(self, z, c_probs, log_param_q, temperature, is_train):
         b = z.size(0)
 
-        if is_train:
+        if c_probs is not None and is_train:
             mu = torch.cat([m.unsqueeze(0) for m in self.mu], dim=0)
             mu = mu.unsqueeze(0)
             mu = torch.sum(
                 mu * c_probs.view(b, self.n_clusters, 1, 1), dim=1
             )  # (b, npts, ndim)
-        else:
+        elif c_probs is not None and not is_train:  # pred
             mu = torch.cat(
                 [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
             )
-        # mu = torch.cat(
-        #     [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
-        # )
+        else:  # pre-train sqvae and diffusion
+            mu = None
 
-        z = z + mu
+        if c_probs is not None:
+            z = z + mu
 
         param_q = log_param_q.exp()
         precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
