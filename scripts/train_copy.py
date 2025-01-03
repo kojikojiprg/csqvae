@@ -92,7 +92,9 @@ if __name__ == "__main__":
         model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
 
         ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
-        logger = TensorBoardLogger("logs", name=dataset_name, version=version + "_sqvae")
+        logger = TensorBoardLogger(
+            "logs", name=dataset_name, version=version + "_sqvae"
+        )
         trainer = Trainer(
             accelerator="cuda",
             strategy=ddp,
@@ -131,7 +133,7 @@ if __name__ == "__main__":
             checkpoint_path,
             map_location=f"cuda:{gpu_ids[0]}",
             config=config,
-            training_stage="diffusion",
+            train_stage="diffusion",
         )
         model.configure_model()
 
@@ -161,6 +163,7 @@ if __name__ == "__main__":
             benchmark=True,
         )
         trainer.fit(model, train_dataloaders=dataloader)
+        torch.cuda.empty_cache()
     else:
         # copy checkpoint
         checkpoint_dir_pre = f"models/{dataset_name}/pretrain"
@@ -186,9 +189,11 @@ if __name__ == "__main__":
         checkpoint_path,
         map_location=f"cuda:{gpu_ids[0]}",
         config=config,
-        training_stage="csqvae",
+        train_stage="csqvae",
     )
     model.configure_model()
+    print("Initiallize CSQ-VAE")
+    model.init_mu(dataset)
 
     # model checkpoint callback
     filename = f"csqvae-{dataset_name}-d{config.latent_dim}-bs{config.book_size}"

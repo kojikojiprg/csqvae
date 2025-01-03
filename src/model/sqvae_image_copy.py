@@ -17,10 +17,11 @@ from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_s
 
 
 class CSQVAE(LightningModule):
-    def __init__(self, config: SimpleNamespace, training_stage: str = None):
+    def __init__(self, config: SimpleNamespace, train_stage: str = None):
         super().__init__()
         self.config = config
-        self.training_stage = training_stage
+        self.train_stage = train_stage
+        self.flg_arelbo = True
 
         self.dataset_name = config.name
         self.x_dim = config.x_dim
@@ -34,6 +35,7 @@ class CSQVAE(LightningModule):
         self.log_param_q_cls = nn.Parameter(
             torch.tensor(log_param_q_cls, dtype=torch.float32)
         )
+
         self.temp_init = config.temp_init
         self.temp_decay = config.temp_decay
         self.temp_min = config.temp_min
@@ -51,7 +53,7 @@ class CSQVAE(LightningModule):
         self.quantizer = None
         self.pixelcnn = None
         self.diffusion = None
-        self.flg_arelbo = True
+        self.mu = None
 
     def configure_model(self):
         if self.encoder is not None:
@@ -73,35 +75,37 @@ class CSQVAE(LightningModule):
             num_heads=self.config.n_heads_cls,
         )
         self.quantizer = GaussianVectorQuantizer(self.config)
+        self.diffusion = DiffusionModule(
+            self.config, not self.train_stage == "diffusion"
+        )
+        npts = self.latent_size[0] * self.latent_size[1]
+        self.mu = nn.ParameterList(
+            [
+                nn.Parameter(torch.zeros(npts, self.latent_dim))
+                for i in range(self.n_clusters)
+            ]
+        )
 
         if not self.flg_arelbo:
             self.logvar_x = nn.Parameter(torch.tensor(np.log(0.1)))
 
-        if self.training_stage == "sqvae":
-            self.diffusion = DiffusionModule(self.config, False)
+        if self.train_stage == "sqvae":
             self.init_weights()
             self.log_param_q_cls.requires_grad_(False)
             self.cls_head.requires_grad_(False)
-            self.quantizer.mu.requires_grad_(False)
             self.diffusion.requires_grad_(False)
-
-        elif self.training_stage == "diffusion":
-            self.diffusion = DiffusionModule(self.config, False)
+            self.mu.requires_grad_(False)
+        elif self.train_stage == "diffusion":
             self.log_param_q_cls.requires_grad_(False)
+            self.log_param_q.requires_grad_(False)
             self.cls_head.requires_grad_(False)
             self.encoder.requires_grad_(False)
             self.decoder.requires_grad_(False)
             self.quantizer.requires_grad_(False)
-
-        elif self.training_stage == "csqvae":
-            self.diffusion = DiffusionModule(self.config, True)
-            # TODO
-            # self.encoder.requires_grad_(False)
-            # self.decoder.requires_grad_(False)
-            # self.log_param_q.requires_grad_(False)
-            # self.quantizer.book.requires_grad_(False)
+            self.mu.requires_grad_(False)
+        elif self.train_stage == "csqvae":
+            pass
         else:
-            self.diffusion = DiffusionModule(self.config, True)
             pass  # prediction
 
     def init_weights(self):
@@ -131,32 +135,69 @@ class CSQVAE(LightningModule):
         nn.init.constant_(self.diffusion.model.fin.linear.weight, 0)
         nn.init.constant_(self.diffusion.model.fin.linear.bias, 0)
 
+    @torch.no_grad()
+    def init_mu(self, dataset, nsamples=10000):
+        targets = dataset.targets
+        if isinstance(targets, np.ndarray):
+            targets = torch.tensor(targets)
+
+        if torch.all(targets == -1):
+            # samples = dataset.data[:nsamples]
+            raise NotImplementedError  # TODO: kmeans++
+        else:
+            indices = torch.where(targets != -1)[0]
+            x_samples = [dataset[i][0].unsqueeze(0) for i in indices[:nsamples]]
+            x_samples = torch.cat(x_samples, dim=0)
+            labels = [dataset[i][1] for i in indices[:nsamples]]
+            labels = torch.tensor(labels)
+
+            z_samples = self.encoder(x_samples.to(self.device))
+            z_samples = z_samples.permute(0, 2, 3, 1).contiguous()
+            z_samples = z_samples.view(x_samples.size(0), -1, self.latent_dim)
+
+            # search the center of each class
+            for i in range(self.n_clusters):
+                z_tmp = z_samples[labels == i]
+                z_mean = z_tmp.mean(dim=(0))
+                self.mu[i] = z_mean
+
+        x_samples = x_samples.detach().cpu()
+        z_samples = z_samples.detach().cpu()
+        z_tmp = z_tmp.detach().cpu()
+        z_mean = z_mean.detach().cpu()
+        del z_samples, x_samples, labels, z_tmp, z_mean
+        torch.cuda.empty_cache()
+
     def configure_optimizers(self):
-        if self.training_stage == "sqvae":
+        if self.train_stage == "sqvae":
             opt = torch.optim.AdamW(self.parameters(), lr=self.config.optim.sqvae.lr)
-            sch = CosineLRScheduler(
-                opt,
-                t_initial=self.config.optim.sqvae.epochs,
-                lr_min=self.config.optim.sqvae.lr_min,
-                warmup_t=self.config.optim.sqvae.warmup_t,
-                warmup_lr_init=self.config.optim.sqvae.warmup_lr_init,
-                warmup_prefix=True,
-            )
-            return [opt], [{"scheduler": sch, "interval": "epoch"}]
-        elif self.training_stage == "diffusion":
+            # sch = CosineLRScheduler(
+            #     opt,
+            #     t_initial=self.config.optim.sqvae.epochs,
+            #     lr_min=self.config.optim.sqvae.lr_min,
+            #     warmup_t=self.config.optim.sqvae.warmup_t,
+            #     warmup_lr_init=self.config.optim.sqvae.warmup_lr_init,
+            #     warmup_prefix=True,
+            # )
+            # return [opt], [{"scheduler": sch, "interval": "epoch"}]
+            return opt
+
+        elif self.train_stage == "diffusion":
             opt = torch.optim.AdamW(
                 self.parameters(), lr=self.config.optim.diffusion.lr
             )
-            sch = CosineLRScheduler(
-                opt,
-                t_initial=self.config.optim.diffusion.epochs,
-                lr_min=self.config.optim.diffusion.lr_min,
-                warmup_t=self.config.optim.diffusion.warmup_t,
-                warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
-                warmup_prefix=True,
-            )
-            return [opt], [{"scheduler": sch, "interval": "epoch"}]
-        elif self.training_stage == "csqvae":
+            # sch = CosineLRScheduler(
+            #     opt,
+            #     t_initial=self.config.optim.diffusion.epochs,
+            #     lr_min=self.config.optim.diffusion.lr_min,
+            #     warmup_t=self.config.optim.diffusion.warmup_t,
+            #     warmup_lr_init=self.config.optim.diffusion.warmup_lr_init,
+            #     warmup_prefix=True,
+            # )
+            # return [opt], [{"scheduler": sch, "interval": "epoch"}]
+            return opt
+
+        elif self.train_stage == "csqvae":
             opt = torch.optim.AdamW(self.parameters(), lr=self.config.optim.csqvae.lr)
             sch = CosineLRScheduler(
                 opt,
@@ -170,53 +211,6 @@ class CSQVAE(LightningModule):
 
     def lr_scheduler_step(self, scheduler, metric):
         scheduler.step(epoch=self.current_epoch)
-
-    def forward(self, x):
-        b = x.size(0)
-
-        if self.training_stage == "sqvae":
-            c_logits = None
-            c_probs = None
-        elif self.training_stage == "diffusion":
-            c_logits = None
-            c_probs = None
-        elif self.training_stage == "csqvae":
-            # classification
-            c_logits = self.cls_head(x)
-            param_q = self.log_param_q_cls.exp()
-            precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
-            c_logits_scaled = c_logits * precision_q
-            c_probs = gumbel_softmax_sample(c_logits_scaled, self.temperature_cls)
-        else:
-            c_probs = c_logits.softmax(-1)
-
-        # encoding
-        z = self.encoder(x)
-        z = z.permute(0, 2, 3, 1).contiguous()
-        z = z.view(b, -1, self.latent_dim)
-
-        # quantization
-        zq, precision_q, logits, mu = self.quantizer(
-            z,
-            c_probs,
-            self.log_param_q,
-            self.temperature,
-            self.training_stage == "sqvae" or self.training_stage == "csqvae",
-        )
-
-        h, w = self.latent_size
-        z = z.view(b, h, w, self.latent_dim)
-        z = z.permute(0, 3, 1, 2)
-        zq = zq.view(b, h, w, self.latent_dim)
-        zq = zq.permute(0, 3, 1, 2)
-
-        # decoding
-        recon_x = self.decoder(zq)
-
-        if self.training_stage is not None:
-            return recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu
-        else:
-            return recon_x, z, zq, logits, c_probs
 
     def calc_temperature(self, temp_init, temp_decay, temp_min):
         return np.max(
@@ -284,30 +278,48 @@ class CSQVAE(LightningModule):
         return F.mse_loss(predicted_noise, noise, reduction="sum") / noise.size(0)
 
     def training_step(self, batch, batch_idx):
-        if self.training_stage == "sqvae":
+        if self.train_stage == "sqvae":
             return self.training_step_sqvae(batch)
-        elif self.training_stage == "diffusion":
+        elif self.train_stage == "diffusion":
             return self.training_step_diffusion(batch)
-        elif self.training_stage == "csqvae":
+        elif self.train_stage == "csqvae":
             return self.training_step_csqvae(batch)
 
     def on_train_epoch_end(self):
-        if self.training_stage == "sqvae":
+        if self.train_stage == "sqvae":
             epochs = self.config.optim.sqvae.epochs
-        elif self.training_stage == "diffusion":
+        elif self.train_stage == "diffusion":
             epochs = self.config.optim.diffusion.epochs
-        elif self.training_stage == "csqvae":
+        elif self.train_stage == "csqvae":
             epochs = self.config.optim.csqvae.epochs
         print(f"\nEpoch {self.current_epoch} / {epochs}: Done. Device {self.device}.\n")
 
     def training_step_sqvae(self, batch):
         x, labels = batch
+        b = x.size(0)
 
         # update temperature of gumbel softmax
         temp_cur = self.calc_temperature(self.temp_init, self.temp_decay, self.temp_min)
         self.temperature = temp_cur
 
-        recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x)
+        # encoding
+        z = self.encoder(x)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
+
+        # quantization
+        zq, precision_q, logits, mu = self.quantizer(
+            z, None, None, self.log_param_q, self.temperature, True
+        )
+
+        h, w = self.latent_size
+        z = z.view(b, h, w, self.latent_dim)
+        z = z.permute(0, 3, 1, 2)
+        zq = zq.view(b, h, w, self.latent_dim)
+        zq = zq.permute(0, 3, 1, 2)
+
+        # decoding
+        recon_x = self.decoder(zq)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
@@ -333,32 +345,49 @@ class CSQVAE(LightningModule):
     def training_step_diffusion(self, batch):
         x, labels = batch
         b = x.size(0)
-        recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x)
+
+        # encoding
+        z = self.encoder(x)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
+
+        # quantization
+        # zq, precision_q, logits, mu = self.quantizer(
+        #     z, None, None, self.log_param_q, None, False
+        # )
+
+        h, w = self.latent_size
+        z = z.view(b, h, w, self.latent_dim)
+        z = z.permute(0, 3, 1, 2)
+        # zq = zq.view(b, h, w, self.latent_dim)
+        # zq = zq.permute(0, 3, 1, 2)
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
-        zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(
-            zq_flat, None, None, is_c_onehot=False
+        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
+        pred_noise, noise, z_prior = self.diffusion.train_step(
+            z_flat, None, None, is_c_onehot=False
         )
-        logits_prior = self.quantizer.calc_distance(
-            zq_prior.view(-1, self.latent_dim), precision_q
-        )
-        logits_prior = logits_prior.view(b, -1, self.book_size)
+        z_prior = z_prior.view(b, -1, self.latent_dim)
+        # logits_prior = self.quantizer.calc_distance(
+        #     z_prior.view(-1, self.latent_dim), precision_q
+        # )
+        # logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # scaling logits_prior
-        logits_prior = logits_prior * precision_q
+        # logits_prior = logits_prior * precision_q
 
         # loss
-        kl_discrete = self.loss_kl_logits(logits, logits_prior)
+        # kl_discrete = self.loss_kl_logits(logits, logits_prior)
+        lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         loss_total = (
-            kl_discrete * self.config.loss.diffusion.lmd_kld
+            lrc_z * self.config.loss.diffusion.lmd_z
             + ldt * self.config.loss.diffusion.lmd_ldt
         )
         loss_dict = dict(
-            kld=kl_discrete.item(),
+            z=lrc_z.item(),
             ldt=ldt.item(),
             total=loss_total.item(),
         )
@@ -377,26 +406,51 @@ class CSQVAE(LightningModule):
         temp_cur = self.calc_temperature(self.temp_init, self.temp_decay, self.temp_min)
         self.temperature = temp_cur
 
-        recon_x, z, zq, logits, precision_q, c_logits, c_probs, mu = self(x)
+        # classification
+        c_logits = self.cls_head(x)
+        param_q = self.log_param_q_cls.exp()
+        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        c_logits_scaled = c_logits * precision_q
+        c_probs = gumbel_softmax_sample(c_logits_scaled, self.temperature_cls)
+
+        # encoding
+        z = self.encoder(x)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
+
+        # quantization (temp is minimum)
+        zq, precision_q, logits, mu = self.quantizer(
+            z, c_probs, self.mu, self.log_param_q, self.temperature, True
+        )
+
+        h, w = self.latent_size
+        z = z.view(b, h, w, self.latent_dim)
+        z = z.permute(0, 3, 1, 2)
+        zq = zq.view(b, h, w, self.latent_dim)
+        zq = zq.permute(0, 3, 1, 2)
+
+        # decoding
+        recon_x = self.decoder(zq)
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
-        zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, zq_prior = self.diffusion.train_step(
-            zq_flat, c_probs, mu, is_c_onehot=False
+        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
+        pred_noise, noise, z_prior = self.diffusion.train_step(
+            z_flat, c_probs, mu, is_c_onehot=False
         )
-        logits_prior = self.quantizer.calc_distance(
-            zq_prior.view(-1, self.latent_dim), precision_q
-        )
-        logits_prior = logits_prior.view(b, -1, self.book_size)
+        # logits_prior = self.quantizer.calc_distance(
+        #     z_prior.view(-1, self.latent_dim), precision_q
+        # )
+        # logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # scaling logits_prior
-        logits_prior = logits_prior * precision_q
+        # logits_prior = logits_prior * precision_q
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
-        kl_discrete = self.loss_kl_logits(logits, logits_prior)
+        # kl_discrete = self.loss_kl_logits(logits, logits_prior)
+        lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         # clustering loss of labeled data
@@ -405,7 +459,8 @@ class CSQVAE(LightningModule):
         loss_total = (
             lrc_x * self.config.loss.csqvae.lmd_x
             + kl_continuous * self.config.loss.csqvae.lmd_klc
-            + kl_discrete * self.config.loss.csqvae.lmd_kld
+            # + kl_discrete * self.config.loss.csqvae.lmd_kld
+            + lrc_z * self.config.loss.csqvae.lmd_z
             + ldt * self.config.loss.csqvae.lmd_ldt
             + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
             + lc_real * self.config.loss.csqvae.lmd_c_real
@@ -413,7 +468,8 @@ class CSQVAE(LightningModule):
         loss_dict = dict(
             x=lrc_x.item(),
             klc=kl_continuous.item(),
-            kld=kl_discrete.item(),
+            # kld=kl_discrete.item(),
+            z=lrc_z.item(),
             ldt=ldt.item(),
             log_param_q=self.log_param_q.item(),
             log_param_q_cls=self.log_param_q_cls.item(),
@@ -424,6 +480,34 @@ class CSQVAE(LightningModule):
         self.log_dict(loss_dict, prog_bar=True, logger=True)
 
         return loss_total
+
+    def forward(self, x):
+        b = x.size(0)
+
+        # classification
+        c_logits = self.cls_head(x)
+        c_probs = c_logits.softmax(-1)
+
+        # encoding
+        z = self.encoder(x)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
+
+        # quantization
+        zq, precision_q, logits, mu = self.quantizer(
+            z, c_probs, self.log_param_q, None, False
+        )
+
+        h, w = self.latent_size
+        z = z.view(b, h, w, self.latent_dim)
+        z = z.permute(0, 3, 1, 2)
+        zq = zq.view(b, h, w, self.latent_dim)
+        zq = zq.permute(0, 3, 1, 2)
+
+        # decoding
+        recon_x = self.decoder(zq)
+
+        return recon_x, z, zq, logits, c_probs
 
     def predict_step(self, batch):
         x, labels = batch

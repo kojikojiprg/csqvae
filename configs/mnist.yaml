@@ -44,12 +44,12 @@ loss:
     lmd_klc: 1
     lmd_kld: 1
   diffusion:
-    lmd_kld: 1
+    lmd_z: 1
     lmd_ldt: 1
   csqvae:
     lmd_x: 1
     lmd_klc: 1
-    lmd_kld: 1
+    lmd_z: 1
     lmd_ldt: 1
     lmd_c_elbo: 1
     lmd_c_real: 100
@@ -57,25 +57,25 @@ loss:
 optim:
   sqvae:
     epochs: 100
-    batch_size: 128
+    batch_size: 32
     accumulate_grad_batches: 1
     lr: 0.001
-    lr_min: 0.0001
-    warmup_t: 10
-    warmup_lr_init: 0.00001
+    # lr_min: 0.0001
+    # warmup_t: 10
+    # warmup_lr_init: 0.00001
   diffusion:
     epochs: 100
-    batch_size: 128
+    batch_size: 32
     accumulate_grad_batches: 1
     lr: 0.0001
-    lr_min: 0.00001
-    warmup_t: 10
-    warmup_lr_init: 0.00001
+    # lr_min: 0.00001
+    # warmup_t: 10
+    # warmup_lr_init: 0.00001
   csqvae:
-    epochs: 1000
-    batch_size: 128
+    epochs: 1
+    batch_size: 32
     accumulate_grad_batches: 1
-    lr: 0.0001
+    lr: 0.0004
     lr_min: 0.00001
     warmup_t: 10
     warmup_lr_init: 0.000001
