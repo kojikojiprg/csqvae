@@ -84,6 +84,7 @@ class CSQVAE(LightningModule):
             self.cls_head.requires_grad_(False)
             self.quantizer.mu.requires_grad_(False)
             self.diffusion.requires_grad_(False)
+
         elif self.training_stage == "diffusion":
             self.diffusion = DiffusionModule(self.config, False)
             self.log_param_q_cls.requires_grad_(False)
@@ -91,10 +92,14 @@ class CSQVAE(LightningModule):
             self.encoder.requires_grad_(False)
             self.decoder.requires_grad_(False)
             self.quantizer.requires_grad_(False)
+
         elif self.training_stage == "csqvae":
             self.diffusion = DiffusionModule(self.config, True)
-            self.encoder.requires_grad_(False)
+            # TODO
+            # self.encoder.requires_grad_(False)
             # self.decoder.requires_grad_(False)
+            # self.log_param_q.requires_grad_(False)
+            # self.quantizer.book.requires_grad_(False)
         else:
             self.diffusion = DiffusionModule(self.config, True)
             pass  # prediction
