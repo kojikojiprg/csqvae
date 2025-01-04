@@ -220,6 +220,23 @@ class CSQVAE(LightningModule):
             ]
         )
 
+    def calc_distance_from_mu(self, z):
+        # z (b, npts, dim)
+        mu = torch.cat([m.unsqueeze(0) for m in self.mu], dim=0)
+        # mu (n_clusters, npts, dim)
+        # mu = mu.unsqueeze(0).repeat(z.size(0), 1, 1, 1)
+
+        z = z.view(z.size(0), -1)
+        mu = mu.view(self.n_clusters, -1)
+
+        distances = -(
+            torch.sum(z**2, dim=-1, keepdim=True)
+            + torch.sum(mu**2, dim=-1)
+            - 2 * torch.matmul(z, mu.t())
+        )
+
+        return distances
+
     def loss_x(self, x, recon_x):
         mse = F.mse_loss(recon_x, x, reduction="sum") / x.size(0)
         if self.flg_arelbo:
@@ -240,13 +257,16 @@ class CSQVAE(LightningModule):
         kl_discreate = torch.sum(prob * log_prob, dim=1).mean()
         return kl_discreate
 
-    def loss_c(self, c_logits, labels):
+    def loss_c(self, c_logits, labels, z):
         c_prob = F.softmax(c_logits, dim=-1)
+        psuedo_labels = self.calc_distance_from_mu(z)
+        psuedo_labels = psuedo_labels.softmax(dim=-1)
         if torch.all(labels == -1):  # all samples are unlabeled
             lc_labeled = torch.Tensor([0.0]).to(self.device)
 
-            c_log_prob = F.log_softmax(c_logits, dim=-1)
-            lc_unlabeled = torch.sum(c_prob * c_log_prob, dim=1).mean()
+            # c_log_prob = F.log_softmax(c_logits, dim=-1)
+            # lc_unlabeled = torch.sum(c_prob * c_log_prob, dim=1).mean()
+            lc_unlabeled = F.cross_entropy(c_prob, psuedo_labels, reduction="sum")
         elif torch.all(labels != -1):  # all samples are unlabeled
             lc_labeled = F.cross_entropy(c_prob, labels, reduction="sum")
             lc_labeled = lc_labeled / c_prob.size(0)
@@ -259,10 +279,15 @@ class CSQVAE(LightningModule):
             )
             lc_labeled = lc_labeled / c_prob[mask_supervised].size(0)
 
-            c_log_prob = F.log_softmax(c_logits, dim=-1)
-            lc_unlabeled = torch.sum(
-                c_prob[~mask_supervised] * c_log_prob[~mask_supervised], dim=1
-            ).mean()
+            # c_log_prob = F.log_softmax(c_logits, dim=-1)
+            # lc_unlabeled = torch.sum(
+            #     c_prob[~mask_supervised] * c_log_prob[~mask_supervised], dim=1
+            # ).mean()
+            lc_unlabeled = F.cross_entropy(
+                c_prob[~mask_supervised],
+                psuedo_labels[~mask_supervised],
+                reduction="sum",
+            )
 
         return lc_labeled, lc_unlabeled
 
@@ -438,29 +463,29 @@ class CSQVAE(LightningModule):
         pred_noise, noise, z_prior = self.diffusion.train_step(
             z_flat, c_probs, mu, is_c_onehot=False
         )
-        # logits_prior = self.quantizer.calc_distance(
-        #     z_prior.view(-1, self.latent_dim), precision_q
-        # )
-        # logits_prior = logits_prior.view(b, -1, self.book_size)
+        logits_prior = self.quantizer.calc_distance(
+            z_prior.view(-1, self.latent_dim), precision_q
+        )
+        logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # scaling logits_prior
-        # logits_prior = logits_prior * precision_q
+        logits_prior = logits_prior * precision_q
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
         kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
-        # kl_discrete = self.loss_kl_logits(logits, logits_prior)
-        lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
+        kl_discrete = self.loss_kl_logits(logits, logits_prior)
+        # lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         # clustering loss of labeled data
-        lc_real, lc_elbo = self.loss_c(c_logits, labels)
+        lc_real, lc_elbo = self.loss_c(c_logits, labels, z_flat)
 
         loss_total = (
             lrc_x * self.config.loss.csqvae.lmd_x
             + kl_continuous * self.config.loss.csqvae.lmd_klc
-            # + kl_discrete * self.config.loss.csqvae.lmd_kld
-            + lrc_z * self.config.loss.csqvae.lmd_z
+            + kl_discrete * self.config.loss.csqvae.lmd_kld
+            # + lrc_z * self.config.loss.csqvae.lmd_z
             + ldt * self.config.loss.csqvae.lmd_ldt
             + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
             + lc_real * self.config.loss.csqvae.lmd_c_real
@@ -468,8 +493,8 @@ class CSQVAE(LightningModule):
         loss_dict = dict(
             x=lrc_x.item(),
             klc=kl_continuous.item(),
-            # kld=kl_discrete.item(),
-            z=lrc_z.item(),
+            kld=kl_discrete.item(),
+            # z=lrc_z.item(),
             ldt=ldt.item(),
             log_param_q=self.log_param_q.item(),
             log_param_q_cls=self.log_param_q_cls.item(),
