@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 sys.path.append(".")
 from src.data.cifar10 import CIFAR10
 from src.data.mnist import MNIST
-from src.model.sqvae_image_copy import CSQVAE
+from src.model.sqvae_image import CSQVAE
 from src.utils import yaml_handler
 
 if __name__ == "__main__":
