@@ -13,7 +13,7 @@ from src.model.module.cifar10 import Encoder as Encoder_CIFAR10
 from src.model.module.diffusion import DiffusionModule
 from src.model.module.mnist import Decoder as Decoder_MNIST
 from src.model.module.mnist import Encoder as Encoder_MNIST
-from src.model.module.quantizer import GaussianVectorQuantizer, gumbel_softmax_sample
+from src.model.module.quantizer import GaussianVectorQuantizer
 
 
 class CSQVAE(LightningModule):
@@ -136,7 +136,10 @@ class CSQVAE(LightningModule):
         nn.init.constant_(self.diffusion.model.fin.linear.bias, 0)
 
     @torch.no_grad()
-    def init_mu(self, dataset, nsamples=10000):
+    def init_mu_and_log_param_q(self, dataset, nsamples=10000):
+        log_param_q = np.log(self.config.param_q_init)
+        self.log_param_q = nn.Parameter(torch.tensor(log_param_q, dtype=torch.float32))
+
         targets = dataset.targets
         if isinstance(targets, np.ndarray):
             targets = torch.tensor(targets)
@@ -363,25 +366,39 @@ class CSQVAE(LightningModule):
         x, labels = batch
         b = x.size(0)
 
+        # classification
+        c_logits = self.cls_head(x)
+        c_probs = c_logits.softmax(-1)
+
         # encoding
-        z = self.encoder(x)
-        z = z.permute(0, 2, 3, 1).contiguous()
-        z = z.view(b, -1, self.latent_dim)
+        ze = self.encoder(x)
+        ze = ze.permute(0, 2, 3, 1).contiguous()
+        ze = ze.view(b, -1, self.latent_dim)
 
         h, w = self.latent_size
-        z = z.view(b, h, w, self.latent_dim)
-        z = z.permute(0, 3, 1, 2)
+        ze = ze.view(b, h, w, self.latent_dim)
+        ze = ze.permute(0, 3, 1, 2)
+
+        # dequantization
+        mu_sampled = torch.cat(
+            [self.mu[c].detach().unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
+        )
+        z = ze + mu_sampled
+
+        # quantization (temp is minimum)
+        zq, precision_q, logits = self.quantizer(
+            z, self.log_param_q, self.temperature, True
+        )
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
-        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, z_prior = self.diffusion.train_step(
-            z_flat, None, None, is_c_onehot=False
+        pred_noise, noise, zq_prior = self.diffusion.train_step(
+            zq, None, None, is_c_onehot=False
         )
-        z_prior = z_prior.view(b, -1, self.latent_dim)
+        zq_prior = zq_prior.view(b, -1, self.latent_dim)
 
         # loss
-        lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
+        lrc_z = F.mse_loss(zq, zq_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         loss_total = (
@@ -429,7 +446,7 @@ class CSQVAE(LightningModule):
         #     mu * c_probs.view(b, self.n_clusters, 1, 1), dim=1
         # )  # (b, npts, ndim)
         mu_sampled = torch.cat(
-            [self.mu[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
+            [self.mu[c].detach().unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
         )
         z = ze + mu_sampled
 
@@ -451,7 +468,7 @@ class CSQVAE(LightningModule):
         self.diffusion.send_sigma_to_device(self.device)
         zq_flat = zq.view(b, self.latent_dim, -1).permute(0, 2, 1)
         pred_noise, noise, zq_prior = self.diffusion.train_step(
-            zq_flat, c_probs, mu_sampled.detach(), is_c_onehot=False
+            zq_flat, c_probs, mu_sampled, is_c_onehot=False
         )
         # logits_prior = self.quantizer.calc_distance(
         #     z_prior.view(-1, self.latent_dim), precision_q
@@ -488,8 +505,8 @@ class CSQVAE(LightningModule):
         loss_dict = dict(
             x=lrc_x.item(),
             klc=kl_continuous.item(),
-            kld=kl_discrete.item(),
-            # z=lrc_z.item(),
+            # kld=kl_discrete.item(),
+            z=lrc_z.item(),
             ldt=ldt.item(),
             log_param_q=self.log_param_q.item(),
             log_param_q_cls=self.log_param_q_cls.item(),
