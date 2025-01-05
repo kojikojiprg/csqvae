@@ -121,6 +121,7 @@ if __name__ == "__main__":
                     f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
                 )
                 shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                break
 
     # ====================================================================================================
     #  Training CSQVAE
@@ -184,6 +185,7 @@ if __name__ == "__main__":
                     f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
                 )
                 shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                break
 
     # ====================================================================================================
     #  Training Diffusion
@@ -246,3 +248,4 @@ if __name__ == "__main__":
                     f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
                 )
                 shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                break
