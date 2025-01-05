@@ -375,10 +375,6 @@ class CSQVAE(LightningModule):
         ze = ze.permute(0, 2, 3, 1).contiguous()
         ze = ze.view(b, -1, self.latent_dim)
 
-        h, w = self.latent_size
-        ze = ze.view(b, h, w, self.latent_dim)
-        ze = ze.permute(0, 3, 1, 2)
-
         # dequantization
         mu_sampled = torch.cat(
             [self.mu[c].detach().unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
@@ -386,9 +382,7 @@ class CSQVAE(LightningModule):
         z = ze + mu_sampled
 
         # quantization (temp is minimum)
-        zq, precision_q, logits = self.quantizer(
-            z, self.log_param_q, self.temperature, True
-        )
+        zq, precision_q, logits = self.quantizer(z, self.log_param_q, None, False)
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
