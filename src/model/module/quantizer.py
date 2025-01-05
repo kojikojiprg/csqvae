@@ -28,6 +28,9 @@ class GaussianVectorQuantizer(nn.Module):
         self.book = nn.Parameter(torch.randn(self.book_size, config.latent_dim))
 
     def calc_distance(self, z, precision_q):
+        if precision_q.ndim != 0:
+            precision_q = precision_q.unsqueeze(1)
+            precision_q = precision_q.repeat(self.npts, 1)
         distances = -(
             torch.sum(z**2, dim=-1, keepdim=True)
             + torch.sum(self.book**2, dim=-1)

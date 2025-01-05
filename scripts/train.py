@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset", choices=["mnist", "cifar10"], type=str)
     parser.add_argument("-g", "--gpu_ids", type=int, nargs="*", default=None)
-    parser.add_argument("-pt", "--pretrain", action="store_true", default=False)
+    parser.add_argument("-pre", "--pretrain", action="store_true", default=False)
     parser.add_argument("-tc", "--train_csqvae", action="store_true", default=False)
     parser.add_argument("-td", "--train_diffusion", action="store_true", default=False)
     args = parser.parse_args()
@@ -207,7 +207,7 @@ if __name__ == "__main__":
         )
         model.configure_model()
         print("Initiallize CSQ-VAE")
-        model.init_mu_and_log_param_q(dataset)
+        model.init_mu(dataset)
 
         # model checkpoint callback
         filename = f"csqvae-v{v_num}-{dataset_name}"

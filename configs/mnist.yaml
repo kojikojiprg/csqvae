@@ -7,11 +7,10 @@ patch_size: [7, 7]
 
 # clustering
 n_clusters: 10
-param_q_init_cls: 1
 
 # quantization
 book_size: 128
-param_q_init: 10
+sigma_q_init: 10
 temp_init: 1.0
 temp_decay: 0.00001
 temp_min: 0.001
@@ -39,10 +38,10 @@ loss:
   csqvae:
     lmd_x: 1
     lmd_klc: 1
-    # lmd_kld: 1
+    lmd_kld: 1
     lmd_z: 1
     lmd_ldt: 1
-    lmd_c_elbo: 1
+    lmd_c_elbo: 10
     lmd_c_real: 10
   finetuning:
     lmd_z: 1
@@ -60,7 +59,7 @@ optim:
     accumulate_grad_batches: 1
     lr: 0.0001
   csqvae:
-    epochs: 50
+    epochs: 100
     batch_size: 128
     accumulate_grad_batches: 1
     lr: 0.0004
@@ -69,8 +68,8 @@ optim:
     warmup_lr_init: 0.000001
   finetuning:
     epochs: 100
-    batch_size: 32
+    batch_size: 128
     accumulate_grad_batches: 1
-    lr: 0.0001
+    lr: 0.00001
 
   num_workers: 4

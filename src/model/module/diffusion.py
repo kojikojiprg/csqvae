@@ -91,15 +91,13 @@ class DiffusionModule(nn.Module):
         b = c_probs.size(0)
 
         if not is_hard_mu_c:
-            mu_c = torch.cat([m.unsqueeze(0) for m in mu_c], dim=0)
+            mu_c = torch.stack([m for m in mu_c])
             mu_c = mu_c.unsqueeze(0)
             mu_c = torch.sum(
                 mu_c * c_probs.view(b, self.n_clusters, 1, 1), dim=1
             )  # (b, npts, ndim)
         else:
-            mu_c = torch.cat(
-                [mu_c[c].unsqueeze(0) for c in c_probs.argmax(dim=-1)], dim=0
-            )
+            mu_c = torch.stack([mu_c[c] for c in c_probs.argmax(dim=-1)])
 
         zq = torch.randn(
             (b, self.latent_size[0] * self.latent_size[1], self.latent_dim)
