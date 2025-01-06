@@ -3,7 +3,7 @@ name: "cifar10"
 n_labeled_samples: 4000
 x_dim: 3072  # 3 * 32 * 32
 x_shape: [3, 32, 32]
-patch_size: [8, 8]
+patch_size: [4, 4]
 
 # clustering
 n_clusters: 10
@@ -11,18 +11,19 @@ n_clusters: 10
 # quantization
 book_size: 512
 sigma_q_init: 20
+sigma_q_c_init: 1
 temp_init: 1.0
 temp_decay: 0.00001
 temp_min: 0.001
 
 # encoder-decoder
-n_resblocks: 6
+n_resblocks: 3
 latent_dim: 64
 latent_size: [8, 8]
 
 # classification head
-n_blocks_cls: 6
-latent_dim_cls: 512
+n_blocks_cls: 3
+latent_dim_cls: 256
 n_heads_cls: 16
 dropout: 0.1
 
@@ -35,13 +36,16 @@ n_blocks_dit: 12
 n_heads_dit: 16
 
 loss:
+  classification:
+    lmd_c_elbo: 0.01
+    lmd_c_real: 1
   csqvae:
     lmd_x: 1
     lmd_klc: 1
     lmd_kld: 1
     lmd_z: 1
     lmd_ldt: 1
-    lmd_c_elbo: 10
+    lmd_c_elbo: 0.01
     lmd_c_real: 10
   finetuning:
     lmd_z: 1
@@ -58,18 +62,23 @@ optim:
     batch_size: 32
     accumulate_grad_batches: 1
     lr: 0.0001
+  classification:
+    epochs: 100
+    batch_size: 1024
+    accumulate_grad_batches: 1
+    lr: 0.0001
   csqvae:
     epochs: 100
-    batch_size: 128
+    batch_size: 1024
     accumulate_grad_batches: 1
-    lr: 0.0004
+    lr: 0.0001
     lr_min: 0.00001
     warmup_t: 10
     warmup_lr_init: 0.000001
   finetuning:
     epochs: 100
-    batch_size: 128
+    batch_size: 32
     accumulate_grad_batches: 1
     lr: 0.00001
 
-  num_workers: 4
+  num_workers: 8

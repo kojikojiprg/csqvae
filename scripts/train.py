@@ -17,26 +17,8 @@ from src.data.mnist import MNIST
 from src.model.sqvae_image import CSQVAE
 from src.utils import yaml_handler
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("dataset", choices=["mnist", "cifar10"], type=str)
-    parser.add_argument("-g", "--gpu_ids", type=int, nargs="*", default=None)
-    parser.add_argument("-pre", "--pretrain", action="store_true", default=False)
-    parser.add_argument("-tc", "--train_csqvae", action="store_true", default=False)
-    parser.add_argument("-td", "--train_diffusion", action="store_true", default=False)
-    args = parser.parse_args()
-    dataset_name = args.dataset
-    gpu_ids = args.gpu_ids
-    pretrain = args.pretrain
-    train_csqvae = args.train_csqvae
-    train_diffusion = args.train_diffusion
 
-    # load config
-    config_name = dataset_name
-    config_path = f"configs/{config_name}.yaml"
-    config = yaml_handler.load(config_path)
-
-    # create checkpoint directory of this version
+def create_checkpoint_dir(dataset_name):
     checkpoint_dir = f"models/{dataset_name}"
     ckpt_dirs = glob(os.path.join(checkpoint_dir, "*/"))
     ckpt_dirs = [d for d in ckpt_dirs if os.path.basename(d[:-1]).isdecimal()]
@@ -47,18 +29,20 @@ if __name__ == "__main__":
             v_num = int(last_ckpt_dir.split("/")[-1])
             if v_num > max_v_num:
                 max_v_num = v_num
-        v_num = max_v_num + 1
+        if "WORLD_SIZE" not in os.environ:
+            v_num = max_v_num + 1
     else:
         v_num = 0
     checkpoint_dir = os.path.join(checkpoint_dir, str(v_num))
-
     if "WORLD_SIZE" not in os.environ:
         # copy config
         os.makedirs(checkpoint_dir, exist_ok=False)
         copy_config_path = os.path.join(checkpoint_dir, f"{config_name}.yaml")
         shutil.copyfile(config_path, copy_config_path)
+    return checkpoint_dir, v_num
 
-    # load dataset
+
+def load_dataset(dataset_name, config, checkpoint_dir):
     summary_path = f"{checkpoint_dir}/summary_train_labels.tsv"
     if dataset_name == "mnist":
         dataset = MNIST(True, config.n_labeled_samples, 42, "data/", True, summary_path)
@@ -66,6 +50,46 @@ if __name__ == "__main__":
         dataset = CIFAR10(
             True, config.n_labeled_samples, 42, "data/", True, summary_path
         )
+    return dataset
+
+
+def get_gpu_index():
+    if "LOCAL_RANK" in os.environ:
+        gpu_index = int(os.environ["LOCAL_RANK"])
+    else:
+        gpu_index = 0
+    return gpu_index
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dataset", choices=["mnist", "cifar10"], type=str)
+    parser.add_argument("-g", "--gpu_ids", type=int, nargs="*", default=None)
+    parser.add_argument("-pre", "--pretrain", action="store_true", default=False)
+    parser.add_argument("-cls", "--train_cls", action="store_true", default=False)
+    parser.add_argument("-csqvae", "--train_csqvae", action="store_true", default=False)
+    parser.add_argument("-dif", "--train_diffusion", action="store_true", default=False)
+    args = parser.parse_args()
+    dataset_name = args.dataset
+    gpu_ids = args.gpu_ids
+    pretrain = args.pretrain
+    train_cls = args.train_cls
+    train_csqvae = args.train_csqvae
+    train_diffusion = args.train_diffusion
+
+    # load config
+    config_name = dataset_name
+    config_path = f"configs/{config_name}.yaml"
+    config = yaml_handler.load(config_path)
+
+    # create checkpoint directory of this version
+    checkpoint_dir, v_num = create_checkpoint_dir(dataset_name)
+
+    # load dataset
+    dataset = load_dataset(dataset_name, config, checkpoint_dir)
+
+    # get gpu index
+    gpu_index = get_gpu_index()
 
     if pretrain or v_num == 0:
         # ====================================================================================================
@@ -127,7 +151,7 @@ if __name__ == "__main__":
         checkpoint_path = sorted(glob(f"{checkpoint_dir}/sqvae-*.ckpt"))[-1]
         model = CSQVAE.load_from_checkpoint(
             checkpoint_path,
-            map_location=f"cuda:{gpu_ids[0]}",
+            map_location=f"cuda:{gpu_ids[gpu_index]}",
             config=config,
             train_stage="diffusion",
         )
@@ -161,28 +185,93 @@ if __name__ == "__main__":
         trainer.fit(model, train_dataloaders=dataloader)
         torch.cuda.empty_cache()
     else:
-        # copy pretrained checkpoint
-        for v_num_pre in reversed(range(v_num)):
-            checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
-            checkpoint_path_pre_sqvae = sorted(
-                glob(f"{checkpoint_dir_pre}/sqvae-*.ckpt")
-            )
-            checkpoint_path_pre_diff = sorted(
-                glob(f"{checkpoint_dir_pre}/diffusion-*.ckpt")
-            )
-            if len(checkpoint_path_pre_sqvae) >= 1:
-                checkpoint_path_pre = checkpoint_path_pre_sqvae[-1]
-                checkpoint_path = (
-                    f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+        if "WORLD_SIZE" not in os.environ:
+            # copy pretrained checkpoint
+            for v_num_pre in reversed(range(v_num)):
+                checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
+                checkpoint_path_pre_sqvae = sorted(
+                    glob(f"{checkpoint_dir_pre}/sqvae-*.ckpt")
                 )
-                shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                checkpoint_path_pre_diff = sorted(
+                    glob(f"{checkpoint_dir_pre}/diffusion-*.ckpt")
+                )
+                if len(checkpoint_path_pre_sqvae) >= 1:
+                    checkpoint_path_pre = checkpoint_path_pre_sqvae[-1]
+                    checkpoint_path = (
+                        f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+                    )
+                    shutil.copyfile(checkpoint_path_pre, checkpoint_path)
 
-                checkpoint_path_pre = checkpoint_path_pre_diff[-1]
-                checkpoint_path = (
-                    f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
-                )
-                shutil.copyfile(checkpoint_path_pre, checkpoint_path)
-                break
+                    checkpoint_path_pre = checkpoint_path_pre_diff[-1]
+                    checkpoint_path = (
+                        f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+                    )
+                    shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                    break
+
+    # ====================================================================================================
+    #  Training Classification
+    # ====================================================================================================
+    if train_cls or v_num == 0:
+        print("Training Classification")
+        dataloader = DataLoader(
+            dataset,
+            config.optim.classification.batch_size,
+            shuffle=True,
+            num_workers=config.optim.num_workers,
+            pin_memory=True,
+        )
+
+        # load model
+        print(checkpoint_dir)
+        checkpoint_path = sorted(glob(f"{checkpoint_dir}/diffusion-*.ckpt"))[-1]
+        model = CSQVAE.load_from_checkpoint(
+            checkpoint_path,
+            map_location=f"cuda:{gpu_ids[gpu_index]}",
+            config=config,
+            train_stage="classification",
+        )
+        model.configure_model()
+        print("Initiallize CSQ-VAE")
+        model.init_mu_and_sigma(dataset)
+
+        # model checkpoint callback
+        filename = f"cls-v{v_num}-{dataset_name}"
+        model_checkpoint = ModelCheckpoint(
+            checkpoint_dir,
+            filename=filename + "-best-{epoch}",
+            monitor="loss",
+            mode="min",
+            save_last=True,
+        )
+        model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
+
+        ddp = DDPStrategy(find_unused_parameters=True, process_group_backend="nccl")
+        logger = TensorBoardLogger("logs", name=dataset_name, version=f"cls_{v_num}")
+        trainer = Trainer(
+            accelerator="cuda",
+            strategy=ddp,
+            devices=gpu_ids,
+            logger=logger,
+            callbacks=[model_checkpoint],
+            max_epochs=config.optim.classification.epochs,
+            accumulate_grad_batches=config.optim.classification.accumulate_grad_batches,
+            benchmark=True,
+        )
+        trainer.fit(model, train_dataloaders=dataloader)
+    else:
+        if "WORLD_SIZE" not in os.environ:
+            # copy pretrained checkpoint
+            for v_num_pre in reversed(range(v_num)):
+                checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
+                checkpoint_path_pre = sorted(glob(f"{checkpoint_dir_pre}/cls-*.ckpt"))
+                if len(checkpoint_path_pre) >= 1:
+                    checkpoint_path_pre = checkpoint_path_pre[-1]
+                    checkpoint_path = (
+                        f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+                    )
+                    shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                    break
 
     # ====================================================================================================
     #  Training CSQVAE
@@ -198,16 +287,17 @@ if __name__ == "__main__":
         )
 
         # load model
-        checkpoint_path = sorted(glob(f"{checkpoint_dir}/diffusion-*.ckpt"))[-1]
+        print(checkpoint_dir)
+        checkpoint_path = sorted(glob(f"{checkpoint_dir}/cls-*.ckpt"))[-1]
         model = CSQVAE.load_from_checkpoint(
             checkpoint_path,
-            map_location=f"cuda:{gpu_ids[0]}",
+            map_location=f"cuda:{gpu_ids[gpu_index]}",
             config=config,
             train_stage="csqvae",
         )
         model.configure_model()
-        print("Initiallize CSQ-VAE")
-        model.init_mu(dataset)
+        # print("Initiallize CSQ-VAE")
+        # model.init_mu_and_sigma(dataset)
 
         # model checkpoint callback
         filename = f"csqvae-v{v_num}-{dataset_name}"
@@ -234,17 +324,20 @@ if __name__ == "__main__":
         )
         trainer.fit(model, train_dataloaders=dataloader)
     else:
-        # copy pretrained checkpoint
-        for v_num_pre in reversed(range(v_num)):
-            checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
-            checkpoint_path_pre = sorted(glob(f"{checkpoint_dir_pre}/csqvae-*.ckpt"))
-            if len(checkpoint_path_pre) >= 1:
-                checkpoint_path_pre = checkpoint_path_pre[-1]
-                checkpoint_path = (
-                    f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+        if "WORLD_SIZE" not in os.environ:
+            # copy pretrained checkpoint
+            for v_num_pre in reversed(range(v_num)):
+                checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
+                checkpoint_path_pre = sorted(
+                    glob(f"{checkpoint_dir_pre}/csqvae-*.ckpt")
                 )
-                shutil.copyfile(checkpoint_path_pre, checkpoint_path)
-                break
+                if len(checkpoint_path_pre) >= 1:
+                    checkpoint_path_pre = checkpoint_path_pre[-1]
+                    checkpoint_path = (
+                        f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+                    )
+                    shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                    break
 
     # ====================================================================================================
     #  Training Diffusion
@@ -263,7 +356,7 @@ if __name__ == "__main__":
         checkpoint_path = sorted(glob(f"{checkpoint_dir}/csqvae-*.ckpt"))[-1]
         model = CSQVAE.load_from_checkpoint(
             checkpoint_path,
-            map_location=f"cuda:{gpu_ids[0]}",
+            map_location=f"cuda:{gpu_ids[gpu_index]}",
             config=config,
             train_stage="finetuning",
         )
@@ -297,16 +390,17 @@ if __name__ == "__main__":
         trainer.fit(model, train_dataloaders=dataloader)
         torch.cuda.empty_cache()
     else:
-        # copy pretrained checkpoint
-        for v_num_pre in reversed(range(v_num)):
-            checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
-            checkpoint_path_pre = sorted(
-                glob(f"{checkpoint_dir_pre}/csqvae-*-finetuned.ckpt")
-            )
-            if len(checkpoint_path_pre) >= 1:
-                checkpoint_path_pre = checkpoint_path_pre[-1]
-                checkpoint_path = (
-                    f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+        if "WORLD_SIZE" not in os.environ:
+            # copy pretrained checkpoint
+            for v_num_pre in reversed(range(v_num)):
+                checkpoint_dir_pre = f"models/{dataset_name}/{v_num_pre}"
+                checkpoint_path_pre = sorted(
+                    glob(f"{checkpoint_dir_pre}/csqvae-*-finetuned.ckpt")
                 )
-                shutil.copyfile(checkpoint_path_pre, checkpoint_path)
-                break
+                if len(checkpoint_path_pre) >= 1:
+                    checkpoint_path_pre = checkpoint_path_pre[-1]
+                    checkpoint_path = (
+                        f"{checkpoint_dir}/{os.path.basename(checkpoint_path_pre)}"
+                    )
+                    shutil.copyfile(checkpoint_path_pre, checkpoint_path)
+                    break

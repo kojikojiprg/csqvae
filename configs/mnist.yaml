@@ -11,6 +11,7 @@ n_clusters: 10
 # quantization
 book_size: 128
 sigma_q_init: 10
+sigma_q_c_init: 1
 temp_init: 1.0
 temp_decay: 0.00001
 temp_min: 0.001
@@ -35,13 +36,16 @@ n_blocks_dit: 6
 n_heads_dit: 16
 
 loss:
+  classification:
+    lmd_c_elbo: 1
+    lmd_c_real: 10
   csqvae:
     lmd_x: 1
     lmd_klc: 1
     lmd_kld: 1
     lmd_z: 1
     lmd_ldt: 1
-    lmd_c_elbo: 10
+    lmd_c_elbo: 1
     lmd_c_real: 10
   finetuning:
     lmd_z: 1
@@ -58,6 +62,11 @@ optim:
     batch_size: 32
     accumulate_grad_batches: 1
     lr: 0.0001
+  classification:
+    epochs: 100
+    batch_size: 128
+    accumulate_grad_batches: 1
+    lr: 0.0001
   csqvae:
     epochs: 100
     batch_size: 128
@@ -68,7 +77,7 @@ optim:
     warmup_lr_init: 0.000001
   finetuning:
     epochs: 100
-    batch_size: 128
+    batch_size: 32
     accumulate_grad_batches: 1
     lr: 0.00001
 
