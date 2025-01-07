@@ -8,25 +8,26 @@ from torchvision import transforms
 class CIFAR10(torchvision.datasets.CIFAR10):
     def __init__(
         self,
-        train: bool,
+        train_stage: str = None,
         n_labeled_samples: float = None,
-        random_flip: bool = False,
-        random_rotate: bool = False,
         seed: int = 42,
         root: str = "data/",
         download: bool = True,
         summary_path: str = None,
     ):
-        if train:
+        if train_stage is not None:
             transform_lst = []
-            if random_flip:
+            if train_stage in ["sqvae", "classification"]:
                 transform_lst.append(transforms.RandomHorizontalFlip())
-            if random_rotate:
-                transform_lst.append(transforms.RandomRotation(10))
+                transform_lst.append(transforms.RandomRotation(5))
+            elif train_stage in ["diffusion", "csqvae", "finetuning"]:
+                transform_lst.append(transforms.RandomHorizontalFlip())
             transform_lst.append(transforms.ToTensor())
-            transform = transforms.Compose(transforms)
+            transform = transforms.Compose(transform_lst)
+            train = True
         else:
             transform = transforms.ToTensor()
+            train = False
         super().__init__(root, train, transform, download=download)
 
         if train:
