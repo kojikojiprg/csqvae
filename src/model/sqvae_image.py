@@ -89,36 +89,27 @@ class CSQVAE(LightningModule):
 
         if self.train_stage == "sqvae":
             self.init_weights()
-            self.log_sigma_q_c.requires_grad_(False)
-            self.cls_head.requires_grad_(False)
-            self.diffusion.requires_grad_(False)
-            self.mu.requires_grad_(False)
+            self.requires_grad_(False)
+            self.encoder.requires_grad_(True)
+            self.decoder.requires_grad_(True)
+            self.log_sigma_q.requires_grad_(True)
+            self.quantizer.requires_grad_(True)
         elif self.train_stage == "diffusion":
-            self.log_sigma_q.requires_grad_(False)
-            self.log_sigma_q_c.requires_grad_(False)
-            self.cls_head.requires_grad_(False)
-            self.encoder.requires_grad_(False)
-            self.decoder.requires_grad_(False)
-            self.quantizer.requires_grad_(False)
-            self.mu.requires_grad_(False)
+            self.requires_grad_(False)
+            self.diffusion.model.requires_grad_(True)
+            self.diffusion.model.emb_c.requires_grad_(False)
+            self.diffusion.model.rotary_emb.freqs.requires_grad_(False)
         elif self.train_stage == "classification":
-            self.log_sigma_q.requires_grad_(False)
-            # self.log_sigma_q_c.requires_grad_(False)
-            self.encoder.requires_grad_(False)
-            self.decoder.requires_grad_(False)
-            self.quantizer.requires_grad_(False)
-            self.diffusion.requires_grad_(False)
-            # self.mu.requires_grad_(False)
+            self.requires_grad_(False)
+            self.log_sigma_q_c.requires_grad_(True)
+            self.cls_head.requires_grad_(True)
+            self.mu.requires_grad_(True)
         elif self.train_stage == "csqvae":
             pass
         elif self.train_stage == "finetuning":
-            self.log_sigma_q.requires_grad_(False)
-            self.log_sigma_q_c.requires_grad_(False)
-            self.cls_head.requires_grad_(False)
-            self.encoder.requires_grad_(False)
-            self.decoder.requires_grad_(False)
-            self.quantizer.requires_grad_(False)
-            self.mu.requires_grad_(False)
+            self.requires_grad_(False)
+            self.diffusion.model.requires_grad_(True)
+            self.diffusion.model.rotary_emb.freqs.requires_grad_(False)
         else:
             pass  # prediction
 
@@ -149,11 +140,12 @@ class CSQVAE(LightningModule):
         nn.init.constant_(self.diffusion.model.fin.linear.weight, 0)
         nn.init.constant_(self.diffusion.model.fin.linear.bias, 0)
 
-    @torch.no_grad()
-    def init_mu_and_sigma(self, dataset, nsamples=10000):
+    def init_log_sigma_q(self):
         log_sigma_q = np.log(self.config.sigma_q_init)
         self.log_sigma_q = nn.Parameter(torch.tensor(log_sigma_q, dtype=torch.float32))
 
+    @torch.no_grad()
+    def init_mu_and_sigma(self, dataset, nsamples=10000):
         log_sigma_q_c = np.log(self.config.sigma_q_c_init)
         self.log_sigma_q_c = nn.ParameterList(
             [
@@ -431,9 +423,9 @@ class CSQVAE(LightningModule):
         z = z.view(b, -1, self.latent_dim)
 
         # clustering loss
-        # psued_labels = self.calc_distance_from_mu(z)
-        # psued_labels = psued_labels.softmax(-1)
-        psued_labels = torch.ones(b, self.n_clusters).to(self.device) / self.n_clusters
+        psued_labels = self.calc_distance_from_mu(z)
+        psued_labels = psued_labels.softmax(-1)
+        # psued_labels = torch.ones(b, self.n_clusters).to(self.device) / self.n_clusters
         lc_real, lc_elbo = self.loss_c(c_probs, labels, psued_labels)
 
         loss_total = (
@@ -512,7 +504,7 @@ class CSQVAE(LightningModule):
 
         # diffusion loss
         # lrc_z = self.loss_kl_continuous(z_flat, z_prior, precision_q)
-        lrc_z = F.mse_loss(z, z_prior) / b
+        lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         # clustering loss
@@ -578,7 +570,7 @@ class CSQVAE(LightningModule):
         z_prior = z_prior.view(b, -1, self.latent_dim)
 
         # loss
-        lrc_z = F.mse_loss(z, z_prior) / b
+        lrc_z = F.mse_loss(z, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         loss_total = (

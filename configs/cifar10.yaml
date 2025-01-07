@@ -37,15 +37,15 @@ n_heads_dit: 16
 
 loss:
   classification:
-    lmd_c_elbo: 0.01
-    lmd_c_real: 1
+    lmd_c_elbo: 1
+    lmd_c_real: 10
   csqvae:
     lmd_x: 1
     lmd_klc: 1
     lmd_kld: 1
     lmd_z: 1
     lmd_ldt: 1
-    lmd_c_elbo: 0.01
+    lmd_c_elbo: 1
     lmd_c_real: 10
   finetuning:
     lmd_z: 1
@@ -63,13 +63,13 @@ optim:
     accumulate_grad_batches: 1
     lr: 0.0001
   classification:
-    epochs: 100
+    epochs: 400
     batch_size: 1024
     accumulate_grad_batches: 1
     lr: 0.0001
   csqvae:
     epochs: 100
-    batch_size: 1024
+    batch_size: 128
     accumulate_grad_batches: 1
     lr: 0.0001
     lr_min: 0.00001

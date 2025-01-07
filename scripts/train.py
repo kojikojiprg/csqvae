@@ -232,7 +232,7 @@ if __name__ == "__main__":
             train_stage="classification",
         )
         model.configure_model()
-        print("Initiallize CSQ-VAE")
+        print("Initiallize mu and sigma of Classification")
         model.init_mu_and_sigma(dataset)
 
         # model checkpoint callback
@@ -246,7 +246,7 @@ if __name__ == "__main__":
         )
         model_checkpoint.CHECKPOINT_NAME_LAST = filename + "-last-{epoch}"
 
-        ddp = DDPStrategy(find_unused_parameters=True, process_group_backend="nccl")
+        ddp = DDPStrategy(find_unused_parameters=False, process_group_backend="nccl")
         logger = TensorBoardLogger("logs", name=dataset_name, version=f"cls_{v_num}")
         trainer = Trainer(
             accelerator="cuda",
@@ -296,8 +296,8 @@ if __name__ == "__main__":
             train_stage="csqvae",
         )
         model.configure_model()
-        # print("Initiallize CSQ-VAE")
-        # model.init_mu_and_sigma(dataset)
+        print("Initiallize log_sigma_q of CSQ-VAE")
+        model.init_log_sigma_q()
 
         # model checkpoint callback
         filename = f"csqvae-v{v_num}-{dataset_name}"
