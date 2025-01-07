@@ -10,18 +10,23 @@ class CIFAR10(torchvision.datasets.CIFAR10):
         self,
         train: bool,
         n_labeled_samples: float = None,
+        random_flip: bool = False,
+        random_rotate: bool = False,
         seed: int = 42,
         root: str = "data/",
         download: bool = True,
         summary_path: str = None,
     ):
-        transform = transforms.Compose(
-            [
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomRotation(degrees=10),
-                transforms.ToTensor(),
-            ]
-        )
+        if train:
+            transform_lst = []
+            if random_flip:
+                transform_lst.append(transforms.RandomHorizontalFlip())
+            if random_rotate:
+                transform_lst.append(transforms.RandomRotation(10))
+            transform_lst.append(transforms.ToTensor())
+            transform = transforms.Compose(transforms)
+        else:
+            transform = transforms.ToTensor()
         super().__init__(root, train, transform, download=download)
 
         if train:

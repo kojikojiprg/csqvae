@@ -42,13 +42,23 @@ def create_checkpoint_dir(dataset_name):
     return checkpoint_dir, v_num
 
 
-def load_dataset(dataset_name, config, checkpoint_dir):
+def load_dataset(dataset_name, config, checkpoint_dir, random_flip, random_rotate):
     summary_path = f"{checkpoint_dir}/summary_train_labels.tsv"
     if dataset_name == "mnist":
-        dataset = MNIST(True, config.n_labeled_samples, 42, "data/", True, summary_path)
+        dataset = MNIST(
+            True,
+            config.n_labeled_samples,
+            random_flip,
+            random_rotate,
+            summary_path=summary_path,
+        )
     elif dataset_name == "cifar10":
         dataset = CIFAR10(
-            True, config.n_labeled_samples, 42, "data/", True, summary_path
+            True,
+            config.n_labeled_samples,
+            random_flip,
+            random_rotate,
+            summary_path=summary_path,
         )
     return dataset
 
@@ -85,9 +95,6 @@ if __name__ == "__main__":
     # create checkpoint directory of this version
     checkpoint_dir, v_num = create_checkpoint_dir(dataset_name)
 
-    # load dataset
-    dataset = load_dataset(dataset_name, config, checkpoint_dir)
-
     # get gpu index
     gpu_index = get_gpu_index()
 
@@ -96,6 +103,10 @@ if __name__ == "__main__":
         #  Pre-training SQ-VAE
         # ====================================================================================================
         print("Pre-training SQ-VAE")
+        # load dataset
+        dataset = load_dataset(
+            dataset_name, config, checkpoint_dir, random_flip=True, random_rotate=True
+        )
         dataloader = DataLoader(
             dataset,
             config.optim.sqvae.batch_size,
@@ -133,12 +144,17 @@ if __name__ == "__main__":
             benchmark=True,
         )
         trainer.fit(model, train_dataloaders=dataloader)
+        del dataset, dataloader, trainer
         torch.cuda.empty_cache()
 
         # ====================================================================================================
         #  Pre-training Diffusion
         # ====================================================================================================
         print("Pre-training Diffusion")
+        # load dataset
+        dataset = load_dataset(
+            dataset_name, config, checkpoint_dir, random_flip=False, random_rotate=False
+        )
         dataloader = DataLoader(
             dataset,
             config.optim.diffusion.batch_size,
@@ -183,6 +199,7 @@ if __name__ == "__main__":
             benchmark=True,
         )
         trainer.fit(model, train_dataloaders=dataloader)
+        del dataset, dataloader, trainer
         torch.cuda.empty_cache()
     else:
         if "WORLD_SIZE" not in os.environ:
@@ -214,9 +231,13 @@ if __name__ == "__main__":
     # ====================================================================================================
     if train_cls or v_num == 0:
         print("Training Classification")
+        # load dataset
+        dataset = load_dataset(
+            dataset_name, config, checkpoint_dir, random_flip=True, random_rotate=True
+        )
         dataloader = DataLoader(
             dataset,
-            config.optim.classification.batch_size,
+            config.optim.diffusion.batch_size,
             shuffle=True,
             num_workers=config.optim.num_workers,
             pin_memory=True,
@@ -259,6 +280,8 @@ if __name__ == "__main__":
             benchmark=True,
         )
         trainer.fit(model, train_dataloaders=dataloader)
+        del dataset, dataloader, trainer
+        torch.cuda.empty_cache()
     else:
         if "WORLD_SIZE" not in os.environ:
             # copy pretrained checkpoint
@@ -278,9 +301,12 @@ if __name__ == "__main__":
     # ====================================================================================================
     if train_csqvae or v_num == 0:
         print("Training CSQ-VAE")
+        dataset = load_dataset(
+            dataset_name, config, checkpoint_dir, random_flip=False, random_rotate=False
+        )
         dataloader = DataLoader(
             dataset,
-            config.optim.csqvae.batch_size,
+            config.optim.diffusion.batch_size,
             shuffle=True,
             num_workers=config.optim.num_workers,
             pin_memory=True,
@@ -323,6 +349,8 @@ if __name__ == "__main__":
             benchmark=True,
         )
         trainer.fit(model, train_dataloaders=dataloader)
+        del dataset, dataloader, trainer
+        torch.cuda.empty_cache()
     else:
         if "WORLD_SIZE" not in os.environ:
             # copy pretrained checkpoint
@@ -344,6 +372,10 @@ if __name__ == "__main__":
     # ====================================================================================================
     if train_diffusion or v_num == 0:
         print("Finetuning Diffusion")
+        # load dataset
+        dataset = load_dataset(
+            dataset_name, config, checkpoint_dir, random_flip=False, random_rotate=False
+        )
         dataloader = DataLoader(
             dataset,
             config.optim.diffusion.batch_size,
@@ -388,6 +420,7 @@ if __name__ == "__main__":
             benchmark=True,
         )
         trainer.fit(model, train_dataloaders=dataloader)
+        del dataset, dataloader, trainer
         torch.cuda.empty_cache()
     else:
         if "WORLD_SIZE" not in os.environ:
