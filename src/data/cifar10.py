@@ -2,7 +2,7 @@ import os
 
 import numpy as np
 import torchvision
-from torchvision.transforms import ToTensor
+from torchvision import transforms
 
 
 class CIFAR10(torchvision.datasets.CIFAR10):
@@ -15,7 +15,14 @@ class CIFAR10(torchvision.datasets.CIFAR10):
         download: bool = True,
         summary_path: str = None,
     ):
-        super().__init__(root, train, ToTensor(), download=download)
+        transform = transforms.Compose(
+            [
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(degrees=10),
+                transforms.ToTensor(),
+            ]
+        )
+        super().__init__(root, train, transform, download=download)
 
         if train:
             self.replace_labels_to_nan(n_labeled_samples, seed, summary_path)
