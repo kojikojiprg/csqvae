@@ -17,12 +17,12 @@ temp_decay: 0.00001
 temp_min: 0.001
 
 # encoder-decoder
-n_resblocks: 3
+n_resblocks: 6
 latent_dim: 64
 latent_size: [8, 8]
 
 # classification head
-n_blocks_cls: 3
+n_blocks_cls: 6
 latent_dim_cls: 256
 n_heads_cls: 16
 dropout: 0.1
@@ -64,7 +64,7 @@ optim:
     lr: 0.0001
   classification:
     epochs: 400
-    batch_size: 1024
+    batch_size: 512
     accumulate_grad_batches: 1
     lr: 0.0001
   csqvae:
