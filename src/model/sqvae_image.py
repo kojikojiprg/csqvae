@@ -105,7 +105,7 @@ class CSQVAE(LightningModule):
             self.cls_head.requires_grad_(True)
             self.mu.requires_grad_(True)
         elif self.train_stage == "csqvae":
-            pass
+            self.log_sigma_q.requires_grad_(False)
         elif self.train_stage == "finetuning":
             self.requires_grad_(False)
             self.diffusion.model.requires_grad_(True)
@@ -351,7 +351,7 @@ class CSQVAE(LightningModule):
 
         # quantization
         zq, precision_q, logits = self.quantizer(
-            z, self.log_sigma_q, self.temperature, True
+            z, self.log_sigma_q.exp(), self.temperature, True
         )
 
         h, w = self.latent_size
@@ -389,19 +389,28 @@ class CSQVAE(LightningModule):
         z = z.permute(0, 2, 3, 1).contiguous()
         z = z.view(b, -1, self.latent_dim)
 
+        # quantization
+        zq, precision_q, logits = self.quantizer(z, self.log_sigma_q.exp(), None, False)
+
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
         pred_noise, noise, z_prior = self.diffusion.train_step(
-            z, None, None, is_c_onehot=False
+            z, None, None, None, is_c_onehot=False
         )
         z_prior = z_prior.view(b, -1, self.latent_dim)
+        logits_prior = self.quantizer.calc_distance(
+            z_prior.view(-1, self.latent_dim), precision_q
+        )
+        logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # loss
+        kl_discrete = self.loss_kl_logits(logits, logits_prior)
         lrc_z = F.mse_loss(z, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
-        loss_total = lrc_z + ldt
+        loss_total = kl_discrete + lrc_z + ldt
         loss_dict = dict(
+            kld=kl_discrete.item(),
             z=lrc_z.item(),
             ldt=ldt.item(),
             total=loss_total.item(),
@@ -457,10 +466,9 @@ class CSQVAE(LightningModule):
         c_probs = c_logits.softmax(-1)
 
         mu_c = torch.stack([self.mu[c] for c in c_probs.argmax(dim=-1)])
-        # log_sigma_q_c = torch.stack(
-        #     [self.log_sigma_q_c[c] for c in c_probs.argmax(dim=-1)]
-        # )
-        # precision_q_c = 0.5 / torch.clamp(log_sigma_q_c.exp(), min=1e-10)
+        log_sigma_q_c = torch.stack(
+            [self.log_sigma_q_c[c] for c in c_probs.argmax(dim=-1)]
+        )
 
         # encoding
         ze = self.encoder(x)
@@ -472,8 +480,8 @@ class CSQVAE(LightningModule):
         # z = ze
 
         # quantization
-        zq, precision_q, logits = self.quantizer(
-            z, self.log_sigma_q, self.temperature, True
+        zq, precision_q_c, logits = self.quantizer(
+            z, log_sigma_q_c.exp(), self.temperature, True
         )
 
         h, w = self.latent_size
@@ -489,28 +497,26 @@ class CSQVAE(LightningModule):
         self.diffusion.send_sigma_to_device(self.device)
         z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
         pred_noise, noise, z_prior = self.diffusion.train_step(
-            z_flat, c_probs, mu_c, is_c_onehot=False
+            z_flat, c_probs, mu_c, log_sigma_q_c.exp(), is_c_onehot=False
         )
         logits_prior = self.quantizer.calc_distance(
-            z_prior.view(-1, self.latent_dim), precision_q
+            z_prior.view(-1, self.latent_dim), precision_q_c
         )
         logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
-        kl_continuous = self.loss_kl_continuous(z, zq, precision_q)
-        # kl_discrete = self.loss_kl_logits(logits, logits_prior)
-        kl_discrete = self.loss_kl_discrete(logits)
+        kl_continuous = self.loss_kl_continuous(z, zq, precision_q_c)
+        kl_discrete = self.loss_kl_logits(logits, logits_prior)
 
         # diffusion loss
-        # lrc_z = self.loss_kl_continuous(z_flat, z_prior, precision_q)
         lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         # clustering loss
         psued_labels = self.calc_distance_from_mu(ze)
         psued_labels = psued_labels.softmax(-1)
-        lc_real, lc_elbo = self.loss_c(c_logits.softmax(-1), labels, psued_labels)
+        lc_real, lc_elbo = self.loss_c(c_probs, labels, psued_labels)
 
         loss_total = (
             lrc_x * self.config.loss.csqvae.lmd_x
@@ -547,6 +553,9 @@ class CSQVAE(LightningModule):
         c_logits = self.cls_head(x)
         c_probs = c_logits.softmax(-1)
         mu_c = torch.stack([self.mu[c] for c in c_probs.argmax(dim=-1)])
+        log_sigma_q_c = torch.stack(
+            [self.log_sigma_q_c[c] for c in c_probs.argmax(dim=-1)]
+        )
 
         # encoding
         ze = self.encoder(x)
@@ -557,27 +566,31 @@ class CSQVAE(LightningModule):
         z = ze + mu_c
 
         # quantization
-        # zq, precision_q_cls, logits = self.quantizer(
-        #     z, param_q_cls, None, False
-        # )
-        # precision_q = 0.5 / torch.clamp(self.log_sigma_q.exp(), min=1e-10)
+        zq, precision_q_c, logits = self.quantizer(z, log_sigma_q_c.exp(), None, False)
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
         pred_noise, noise, z_prior = self.diffusion.train_step(
-            z, c_probs, mu_c, is_c_onehot=False
+            z, c_probs, mu_c, log_sigma_q_c.exp(), is_c_onehot=False
         )
         z_prior = z_prior.view(b, -1, self.latent_dim)
+        logits_prior = self.quantizer.calc_distance(
+            z_prior.view(-1, self.latent_dim), precision_q_c
+        )
+        logits_prior = logits_prior.view(b, -1, self.book_size)
 
         # loss
+        kl_discrete = self.loss_kl_logits(logits, logits_prior)
         lrc_z = F.mse_loss(z, z_prior, reduction="sum") / b
         ldt = self.loss_diffusion(pred_noise, noise)
 
         loss_total = (
-            lrc_z * self.config.loss.finetuning.lmd_z
+            kl_discrete * self.config.loss.finetuning.lmd_kld
+            + lrc_z * self.config.loss.finetuning.lmd_z
             + ldt * self.config.loss.finetuning.lmd_ldt
         )
         loss_dict = dict(
+            kld=kl_discrete.item(),
             z=lrc_z.item(),
             ldt=ldt.item(),
             total=loss_total.item(),
@@ -601,7 +614,7 @@ class CSQVAE(LightningModule):
         z = z.view(b, -1, self.latent_dim)
 
         # quantization
-        zq, precision_q, logits = self.quantizer(z, log_sigma_q_c, None, False)
+        zq, precision_q, logits = self.quantizer(z, log_sigma_q_c.exp(), None, False)
 
         h, w = self.latent_size
         z = z.view(b, h, w, self.latent_dim)
@@ -644,17 +657,37 @@ class CSQVAE(LightningModule):
         return results
 
     @torch.no_grad()
-    def sample(self, c_probs: torch.Tensor, with_diffusion: bool = True):
+    def sample(
+        self,
+        c_probs: torch.Tensor,
+        with_diffusion: bool = True,
+        is_hard_mu_c: bool = True,
+    ):
         c_probs = c_probs.to(self.device, torch.float32)
         nsamples = c_probs.size(0)
         h, w = self.latent_size
 
-        if with_diffusion:
-            z = self.diffusion.sample(c_probs, self.mu)
-            zq = self.quantizer.z_to_zq(z, self.log_sigma_q)
+        if not is_hard_mu_c:
+            mu_c = torch.stack([m for m in self.mu])
+            mu_c = mu_c.unsqueeze(0)
+            mu_c = torch.sum(
+                mu_c * c_probs.view(nsamples, self.n_clusters, 1, 1), dim=1
+            )  # (b, npts, ndim)
+            sigma_c = torch.stack([s.exp() for s in self.log_sigma_q_c])
+            sigma_c = sigma_c.unsqueeze(0)
+            sigma_c = torch.sum(sigma_c * c_probs, dim=1)  # (b, )
         else:
-            z = torch.randn((nsamples, h * w, self.latent_dim)).to(self.device)
-            zq, precision_q, logits = self.quantizer(z, self.log_sigma_q, None, False)
+            mu_c = torch.stack([self.mu[c] for c in c_probs.argmax(dim=-1)])
+            sigma_c = torch.stack(
+                [self.log_sigma_q_c[c].exp() for c in c_probs.argmax(dim=-1)]
+            )
+
+        if with_diffusion:
+            z = self.diffusion.sample(c_probs, mu_c, sigma_c)
+            zq = self.quantizer.z_to_zq(z, sigma_c)
+        else:
+            z = mu_c + torch.randn_like(mu_c) * sigma_c[:, None, None]
+            zq, precision_q, logits = self.quantizer(z, sigma_c, None, False)
 
         # generate samples
         z = z.view(nsamples, h, w, self.latent_dim)

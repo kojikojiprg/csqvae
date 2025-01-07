@@ -73,7 +73,7 @@ if __name__ == "__main__":
     parser.add_argument("dataset", choices=["mnist", "cifar10"], type=str)
     parser.add_argument("-g", "--gpu_ids", type=int, nargs="*", default=None)
     parser.add_argument("-pre", "--pretrain", action="store_true", default=False)
-    parser.add_argument("-ts", "--train_csqvae", action="store_true", default=False)
+    parser.add_argument("-tc", "--train_csqvae", action="store_true", default=False)
     parser.add_argument("-ft", "--finetuning", action="store_true", default=False)
     args = parser.parse_args()
     dataset_name = args.dataset
@@ -104,7 +104,7 @@ if __name__ == "__main__":
             dataset = load_dataset(dataset_name, config, checkpoint_dir, train_stage)
             dataloader = DataLoader(
                 dataset,
-                config.optim.sqvae.batch_size,
+                eval(f"config.optim.{train_stage}.batch_size"),
                 shuffle=True,
                 num_workers=config.optim.num_workers,
                 pin_memory=True,
@@ -128,9 +128,11 @@ if __name__ == "__main__":
                 if train_stage == "classification":
                     print("Initiallize mu and sigma of Classification")
                     model.init_mu_and_sigma(dataset)
-                if train_stage == "csqvae":
-                    print("Initiallize log_sigma_q of CSQ-VAE")
-                    model.init_log_sigma_q()
+                elif train_stage == "csqvae":
+                    # print("Initiallize log_sigma_q of CSQ-VAE")
+                    # model.init_log_sigma_q()
+                    print("Initiallize mu and sigma of Classification")
+                    model.init_mu_and_sigma(dataset)
 
             # model checkpoint callback
             filename = f"{train_stage}-v{v_num}-{dataset_name}"
@@ -166,7 +168,6 @@ if __name__ == "__main__":
             del dataset, dataloader, trainer
             torch.cuda.empty_cache()
 
-            train_stage_last = train_stage
         else:
             if "WORLD_SIZE" not in os.environ:
                 # copy pretrained checkpoint
@@ -182,3 +183,5 @@ if __name__ == "__main__":
                         )
                         shutil.copyfile(checkpoint_path_pre, checkpoint_path)
                         break
+
+        train_stage_last = train_stage

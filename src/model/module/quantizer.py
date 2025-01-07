@@ -39,11 +39,10 @@ class GaussianVectorQuantizer(nn.Module):
 
         return distances * precision_q
 
-    def forward(self, z, log_param_q, temperature, is_train):
+    def forward(self, z, sigma_q, temperature, is_train):
         b = z.size(0)
 
-        param_q = log_param_q.exp()
-        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        precision_q = 0.5 / torch.clamp(sigma_q, min=1e-10)
         logits = self.calc_distance(z.view(-1, self.dim), precision_q)
 
         if is_train:
@@ -60,11 +59,10 @@ class GaussianVectorQuantizer(nn.Module):
 
         return zq, precision_q, logits
 
-    def z_to_zq(self, z, log_param_q):
+    def z_to_zq(self, z, sigma_q):
         b = z.size(0)
 
-        param_q = log_param_q.exp()
-        precision_q = 0.5 / torch.clamp(param_q, min=1e-10)
+        precision_q = 0.5 / torch.clamp(sigma_q, min=1e-10)
         logits = self.calc_distance(z.view(-1, self.dim), precision_q)
 
         indices = torch.argmax(logits, dim=-1).unsqueeze(1)
