@@ -85,7 +85,7 @@ class DiffusionModule(nn.Module):
         return pred_noise, noise, pred_zq_0
 
     @torch.no_grad()
-    def sample(self, c_probs, mu_c, sigma_c, is_hard_mu_c=True):
+    def sample(self, c_probs, mu_c, sigma_c):
         self.send_sigma_to_device(c_probs.device)
 
         b = c_probs.size(0)
