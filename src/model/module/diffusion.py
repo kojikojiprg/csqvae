@@ -90,12 +90,9 @@ class DiffusionModule(nn.Module):
 
         b = c_probs.size(0)
 
-        z = (
-            torch.randn((b, self.latent_size[0] * self.latent_size[1], self.latent_dim))
-            * sigma_c[:, None, None]
-        )
+        z = torch.randn((b, self.latent_size[0] * self.latent_size[1], self.latent_dim))
         z = z.to(c_probs.device)
-        z = z + mu_c
+        z = mu_c + z * sigma_c[:, None, None]
 
         for i in tqdm(list(reversed(range(1, self.noise_steps)))):
             t = torch.full((b,), i).long().to(c_probs.device)
