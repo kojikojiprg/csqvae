@@ -129,10 +129,11 @@ if __name__ == "__main__":
                     print("Initiallize mu and sigma of Classification")
                     model.init_mu_and_sigma(dataset)
                 elif train_stage == "csqvae":
-                    # print("Initiallize log_sigma_q of CSQ-VAE")
-                    # model.init_log_sigma_q()
-                    print("Initiallize mu and sigma of Classification")
-                    model.init_mu_and_sigma(dataset)
+                    print("Initiallize Quantizer of CSQ-VAE")
+                    model.reset_log_param_q()
+                elif train_stage == "finetuning":
+                    print("Initiallize Diffusion Model of CSQ-VAE")
+                    model.reset_diffusion()
 
             # model checkpoint callback
             filename = f"{train_stage}-v{v_num}-{dataset_name}"

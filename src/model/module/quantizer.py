@@ -25,7 +25,7 @@ class GaussianVectorQuantizer(nn.Module):
         size = config.latent_size
         self.npts = size[0] * size[1]
 
-        self.book = nn.Parameter(torch.randn(self.book_size, config.latent_dim))
+        self.book = nn.Parameter(torch.randn(self.book_size, self.dim))
 
     def calc_distance(self, z, precision_q):
         if precision_q.ndim != 0:

@@ -105,7 +105,7 @@ class CSQVAE(LightningModule):
             self.cls_head.requires_grad_(True)
             self.mu.requires_grad_(True)
         elif self.train_stage == "csqvae":
-            self.log_sigma_q.requires_grad_(False)
+            self.diffusion.model.requires_grad_(False)
         elif self.train_stage == "finetuning":
             self.requires_grad_(False)
             self.diffusion.model.requires_grad_(True)
@@ -140,9 +140,13 @@ class CSQVAE(LightningModule):
         nn.init.constant_(self.diffusion.model.fin.linear.weight, 0)
         nn.init.constant_(self.diffusion.model.fin.linear.bias, 0)
 
-    def init_log_sigma_q(self):
+    def reset_log_param_q(self):
         log_sigma_q = np.log(self.config.sigma_q_init)
         self.log_sigma_q = nn.Parameter(torch.tensor(log_sigma_q, dtype=torch.float32))
+        # self.quantizer.book = nn.Parameter(torch.randn(self.book_size, self.latent_dim))
+
+    def reset_diffusion(self):
+        self.diffusion = DiffusionModule(self.config, True)
 
     @torch.no_grad()
     def init_mu_and_sigma(self, dataset, nsamples=10000):
@@ -373,7 +377,7 @@ class CSQVAE(LightningModule):
             x=lrc_x.item(),
             klc=kl_continuous.item(),
             kld=kl_discrete.item(),
-            log_param_q=self.log_sigma_q.item(),
+            log_sigma_q=self.log_sigma_q.item(),
             total=loss_total.item(),
         )
         self.log_dict(loss_dict, prog_bar=True, logger=True)
@@ -434,7 +438,6 @@ class CSQVAE(LightningModule):
         # clustering loss
         psued_labels = self.calc_distance_from_mu(z)
         psued_labels = psued_labels.softmax(-1)
-        # psued_labels = torch.ones(b, self.n_clusters).to(self.device) / self.n_clusters
         lc_real, lc_elbo = self.loss_c(c_probs, labels, psued_labels)
 
         loss_total = (
@@ -444,7 +447,7 @@ class CSQVAE(LightningModule):
 
         log_sigma_q_c = torch.tensor([s for s in self.log_sigma_q_c]).mean()
         loss_dict = dict(
-            log_param_q_c=log_sigma_q_c.item(),
+            log_sigma_q_c=log_sigma_q_c.item(),
             c_elbo=lc_elbo.item(),
             c_real=lc_real.item(),
             total=loss_total.item(),
@@ -465,56 +468,36 @@ class CSQVAE(LightningModule):
         c_logits = self.cls_head(x)
         c_probs = c_logits.softmax(-1)
 
-        mu_c = torch.stack([self.mu[c] for c in c_probs.argmax(dim=-1)])
-        log_sigma_q_c = torch.stack(
+        mu_c = torch.stack([self.mu[c].detach() for c in c_probs.argmax(dim=-1)])
+        sigma_c = torch.stack(
             [self.log_sigma_q_c[c] for c in c_probs.argmax(dim=-1)]
-        )
+        ).exp()
 
         # encoding
-        ze = self.encoder(x)
-        ze = ze.permute(0, 2, 3, 1).contiguous()
-        ze = ze.view(b, -1, self.latent_dim)
-
-        # dequantization
-        z = ze + mu_c
-        # z = ze
+        z = self.encoder(x)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
 
         # quantization
-        zq, precision_q_c, logits = self.quantizer(
-            z, log_sigma_q_c.exp(), self.temperature, True
+        sigma_q = self.log_sigma_q.exp() + sigma_c
+        zq, precision_q, logits = self.quantizer(
+            z + mu_c, sigma_q, self.temperature, True
         )
 
         h, w = self.latent_size
-        z = z.view(b, h, w, self.latent_dim)
-        z = z.permute(0, 3, 1, 2)
-        zq = zq.view(b, h, w, self.latent_dim)
-        zq = zq.permute(0, 3, 1, 2)
+        zq_recon = zq.view(b, h, w, self.latent_dim)
+        zq_recon = zq_recon.permute(0, 3, 1, 2)
 
         # decoding
-        recon_x = self.decoder(zq)
-
-        # samplig z_prior from diffusion
-        self.diffusion.send_sigma_to_device(self.device)
-        z_flat = z.view(b, self.latent_dim, -1).permute(0, 2, 1)
-        pred_noise, noise, z_prior = self.diffusion.train_step(
-            z_flat, c_probs, mu_c, log_sigma_q_c.exp(), is_c_onehot=False
-        )
-        logits_prior = self.quantizer.calc_distance(
-            z_prior.view(-1, self.latent_dim), precision_q_c
-        )
-        logits_prior = logits_prior.view(b, -1, self.book_size)
+        recon_x = self.decoder(zq_recon)
 
         # ELBO loss
         lrc_x = self.loss_x(x, recon_x)
-        kl_continuous = self.loss_kl_continuous(z, zq, precision_q_c)
-        kl_discrete = self.loss_kl_logits(logits, logits_prior)
-
-        # diffusion loss
-        lrc_z = F.mse_loss(z_flat, z_prior, reduction="sum") / b
-        ldt = self.loss_diffusion(pred_noise, noise)
+        kl_continuous = self.loss_kl_continuous(z + mu_c, zq, precision_q)
+        kl_discrete = self.loss_kl_discrete(logits)
 
         # clustering loss
-        psued_labels = self.calc_distance_from_mu(ze)
+        psued_labels = self.calc_distance_from_mu(z)
         psued_labels = psued_labels.softmax(-1)
         lc_real, lc_elbo = self.loss_c(c_probs, labels, psued_labels)
 
@@ -522,8 +505,6 @@ class CSQVAE(LightningModule):
             lrc_x * self.config.loss.csqvae.lmd_x
             + kl_continuous * self.config.loss.csqvae.lmd_klc
             + kl_discrete * self.config.loss.csqvae.lmd_kld
-            + lrc_z * self.config.loss.csqvae.lmd_z
-            + ldt * self.config.loss.csqvae.lmd_ldt
             + lc_elbo * self.config.loss.csqvae.lmd_c_elbo
             + lc_real * self.config.loss.csqvae.lmd_c_real
         )
@@ -533,10 +514,8 @@ class CSQVAE(LightningModule):
             x=lrc_x.item(),
             klc=kl_continuous.item(),
             kld=kl_discrete.item(),
-            z=lrc_z.item(),
-            ldt=ldt.item(),
-            log_param_q=self.log_sigma_q.item(),
-            log_param_q_c=log_sigma_q_c.item(),
+            log_sigma_q=self.log_sigma_q.item(),
+            log_sigma_q_c=log_sigma_q_c.item(),
             c_elbo=lc_elbo.item(),
             c_real=lc_real.item(),
             total=loss_total.item(),
@@ -553,29 +532,27 @@ class CSQVAE(LightningModule):
         c_logits = self.cls_head(x)
         c_probs = c_logits.softmax(-1)
         mu_c = torch.stack([self.mu[c] for c in c_probs.argmax(dim=-1)])
-        log_sigma_q_c = torch.stack(
+        sigma_c = torch.stack(
             [self.log_sigma_q_c[c] for c in c_probs.argmax(dim=-1)]
-        )
+        ).exp()
 
         # encoding
-        ze = self.encoder(x)
-        ze = ze.permute(0, 2, 3, 1).contiguous()
-        ze = ze.view(b, -1, self.latent_dim)
-
-        # dequantization
-        z = ze + mu_c
+        z = self.encoder(x)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        z = z.view(b, -1, self.latent_dim)
 
         # quantization
-        zq, precision_q_c, logits = self.quantizer(z, log_sigma_q_c.exp(), None, False)
+        sigma_q = self.log_sigma_q.exp() + sigma_c
+        zq, precision_q, logits = self.quantizer(z + mu_c, sigma_q, None, False)
 
         # samplig z_prior from diffusion
         self.diffusion.send_sigma_to_device(self.device)
         pred_noise, noise, z_prior = self.diffusion.train_step(
-            z, c_probs, mu_c, log_sigma_q_c.exp(), is_c_onehot=False
+            z, c_probs, is_c_onehot=True
         )
         z_prior = z_prior.view(b, -1, self.latent_dim)
         logits_prior = self.quantizer.calc_distance(
-            z_prior.view(-1, self.latent_dim), precision_q_c
+            (z_prior + mu_c).view(-1, self.latent_dim), precision_q
         )
         logits_prior = logits_prior.view(b, -1, self.book_size)
 
@@ -604,8 +581,9 @@ class CSQVAE(LightningModule):
         # classification
         c_logits = self.cls_head(x)
         c_probs = c_logits.softmax(-1)
-        log_sigma_q_c = torch.stack(
-            [self.log_sigma_q_c[c] for c in c_probs.argmax(dim=-1)]
+        mu_c = torch.stack([self.mu[c] for c in c_probs.argmax(dim=-1)])
+        sigma_c = torch.stack(
+            [self.log_sigma_q_c[c].exp() for c in c_probs.argmax(dim=-1)]
         )
 
         # encoding
@@ -614,7 +592,8 @@ class CSQVAE(LightningModule):
         z = z.view(b, -1, self.latent_dim)
 
         # quantization
-        zq, precision_q, logits = self.quantizer(z, log_sigma_q_c.exp(), None, False)
+        sigma_q = self.log_sigma_q.exp() + sigma_c
+        zq, precision_q, logits = self.quantizer(z + mu_c, sigma_q, None, False)
 
         h, w = self.latent_size
         z = z.view(b, h, w, self.latent_dim)
@@ -683,11 +662,10 @@ class CSQVAE(LightningModule):
             )
 
         if with_diffusion:
-            z = self.diffusion.sample(c_probs, mu_c, sigma_c)
-            zq = self.quantizer.z_to_zq(z, sigma_c)
+            z = mu_c + self.diffusion.sample(c_probs)
         else:
             z = mu_c + torch.randn_like(mu_c) * sigma_c[:, None, None]
-            zq, precision_q, logits = self.quantizer(z, sigma_c, None, False)
+        zq = self.quantizer.z_to_zq(z, sigma_c + self.log_sigma_q.exp())
 
         # generate samples
         z = z.view(nsamples, h, w, self.latent_dim)

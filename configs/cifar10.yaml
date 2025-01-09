@@ -29,7 +29,7 @@ dropout: 0.1
 
 # diffusion
 noise_steps: 1000
-beta_start: 0.001
+beta_start: 0.0001
 beta_end: 0.02
 latent_dim_diffusion: 512
 n_blocks_dit: 12
@@ -48,6 +48,7 @@ loss:
     lmd_c_elbo: 1
     lmd_c_real: 10
   finetuning:
+    lmd_kld: 1
     lmd_z: 1
     lmd_ldt: 1
 
@@ -68,8 +69,8 @@ optim:
     accumulate_grad_batches: 1
     lr: 0.0001
   csqvae:
-    epochs: 100
-    batch_size: 128
+    epochs: 400
+    batch_size: 256
     accumulate_grad_batches: 1
     lr: 0.0001
     lr_min: 0.00001
@@ -79,6 +80,6 @@ optim:
     epochs: 100
     batch_size: 32
     accumulate_grad_batches: 1
-    lr: 0.00001
+    lr: 0.0001
 
   num_workers: 8
